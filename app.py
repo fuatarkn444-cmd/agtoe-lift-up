@@ -1,11 +1,13 @@
 import streamlit as st
 import numpy as np
-import pandas as pd  # <-- Veri indirme özelliği için eklendi
+import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.metrics import mean_squared_error
 import os
+import io          # <-- ZIP ve Görsel kaydetmek için eklendi
+import zipfile     # <-- ZIP arşivi oluşturmak için eklendi
 
 st.set_page_config(page_title="LIFT-UP Kestirimci Bakım", page_icon=" ✈️ ", layout="wide")
 
@@ -34,20 +36,15 @@ if st.session_state.ilk_giris:
 # --- CSS İLE TEMA VE DÜZEN ENJEKSİYONU ---
 st.markdown("""
 <style>
-/* ÜST TAVAN ŞERİDİ (PREMIUM BANNER) - Yan menüyle hizalı */
 header[data-testid="stHeader"] {
     background: linear-gradient(90deg, #004B87, #E31837) !important;
     height: 4px !important;
 }
-
-/* Başlıklar */
 h1, h2, h3, h4 {
     color: #004B87 !important;
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     font-weight: 700;
 }
-
-/* METRİK KARTLARI */
 [data-testid="metric-container"] {
     border: 1px solid rgba(136, 136, 136, 0.2);
     padding: 15px;
@@ -60,13 +57,10 @@ h1, h2, h3, h4 {
     transform: translateY(-3px);
     box-shadow: 3px 3px 8px rgba(0,0,0,0.15);
 }
-
 [data-testid="stMetricValue"] {
     color: #004B87 !important;
     font-weight: 800;
 }
-
-/* Ana Buton (Başlat Tuşu) */
 div.stButton > button:first-child {
     background: linear-gradient(90deg, #004B87, #0066cc);
     color: #FFFFFF;
@@ -77,25 +71,20 @@ div.stButton > button:first-child {
     transition: all 0.3s ease;
     box-shadow: 0 4px 6px rgba(0,0,0,0.2);
 }
-
 div.stButton > button:first-child:hover {
     background: linear-gradient(90deg, #E31837, #ff3333);
     color: #FFFFFF;
     transform: scale(1.02);
     box-shadow: 0 6px 10px rgba(0,0,0,0.25);
 }
-
 div[data-baseweb="tab-list"] button[aria-selected="true"] {
     border-bottom: 3px solid #E31837 !important;
     color: #E31837 !important;
     font-weight: bold;
 }
-
-/* YAN PANEL (SIDEBAR) STİLİ */
 [data-testid="stSidebar"] {
     border-right: 3px solid #E31837;
 }
-
 [data-testid="stSidebar"]::before {
     content: "REMOVE BEFORE FLIGHT";
     display: block;
@@ -213,6 +202,7 @@ class AI_ToolLife:
         future_blocks = np.arange(1, grafik_son_blok + 1).reshape(-1, 1)
         future_y = model.predict(poly.transform(future_blocks))
         
+        # PARAMETRELERİN TAMAMINI SÖZLÜĞE KAYDEDİYORUZ Kİ CSV'YE AKTARABİLELİM
         self.scenarios[name] = {
             'mat_name': mat_name, 'b_raw': blocks, 'y_raw': wear_data,
             'b_fut': future_blocks.flatten(), 'y_fut': future_y,
@@ -223,13 +213,14 @@ class AI_ToolLife:
             'cam_cycle_time': cam_cycle_time,
             'veri_sayisi': veri_sayisi,
             'uzak_tahmin_uyarisi': uzak_tahmin_uyarisi,
-            'karsilastirma_durumu': karsilastirma_durumu
+            'karsilastirma_durumu': karsilastirma_durumu,
+            'D': D, 'z': z, 'Lc': Lc, 'Vc': Vc, 'fz': fz, 'ap': ap, 'ae': ae # Yeni Eklenen Parametreler
         }
 
     def plot_dashboard(self):
         if not self.scenarios:
             st.warning("Gösterilecek veri yok.")
-            return
+            return None
             
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
         colors = ['#E31837', '#004B87', '#d62728', '#1f77b4', '#ff7f0e']
@@ -297,6 +288,7 @@ class AI_ToolLife:
         ax2.set_xlim(0, genel_max_time)
         fig.tight_layout(pad=2.0)
         st.pyplot(fig)
+        return fig # Grafik objesini dışarıya aktarıyoruz ki kaydedebilelim
 
 
 MALZEMELER = {
@@ -436,32 +428,56 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
                 cmm_vals = [float(x) for x in d["cmm_str"].replace(',', ' ').split()]
                 system.add_scenario(d["isim"], d["mat_isim"], d["mat_data"]['kc'], d["mat_data"]['c_taylor'], d["t_cap"], d["t_dis"], d["t_boy"], d["vc"], d["fz"], d["ap"], d["ae"], list(range(1, len(cmm_vals) + 1)), cmm_vals, d["cam_sure"])
             
-            system.plot_dashboard()
+            # Grafiği çizdirip objeyi 'fig' değişkenine alıyoruz
+            fig = system.plot_dashboard()
 
-            # --- YENİ EKLENEN KISIM: CSV İNDİRME ÖZELLİĞİ ---
+            # --- YENİ EKLENEN KISIM: ZIP (Görsel + Detaylı Tablo) İNDİRME ÖZELLİĞİ ---
             st.markdown("---")
-            st.subheader(" 💾 Analiz Raporunu Kaydet")
+            st.subheader(" 📦 Tüm Analiz Paketini Kaydet")
             
+            # 1. Rapor Verilerini Hazırlama (Tüm Giriş Çıkış Parametreleri ile Birlikte)
             rapor_verileri = []
             for isim, veri in system.scenarios.items():
                 rapor_verileri.append({
                     "Senaryo Adı": isim,
                     "Alaşım": veri['mat_name'],
+                    "Takım Çapı (D) [mm]": veri['D'],
+                    "Diş Sayısı (z)": veri['z'],
+                    "Kesme Boyu (Lc) [mm]": veri['Lc'],
+                    "Kesme Hızı (Vc) [m/min]": veri['Vc'],
+                    "İlerleme (fz) [mm/diş]": veri['fz'],
+                    "Eksenel Derinlik (ap) [mm]": veri['ap'],
+                    "Radyal Derinlik (ae) [mm]": veri['ae'],
+                    "İşleme Süresi (Dk/Blok)": veri['cam_cycle_time'],
+                    "Girilen CMM Verileri": " - ".join(map(str, veri['y_raw'])), # Girdiğin verileri tek bir hücrede listeler
                     "Teorik Takım Ömrü (Dk)": round(veri['t_theo'], 2),
                     "Tam Kırılma Noktası (Blok)": veri['guven_araligi_metni'],
                     "Tam Kırılma Noktası (Zaman)": veri['sure_araligi_metni'],
                     "Model Sapması (RMSE)": round(veri['rmse_val'], 4),
-                    "Operasyon Önerisi": veri['uretim_metni'].replace('*', '') # Markdown formatlamasını temizler
+                    "Operasyon Önerisi": veri['uretim_metni'].replace('*', '') 
                 })
             
             df_rapor = pd.DataFrame(rapor_verileri)
-            csv_verisi = df_rapor.to_csv(index=False).encode('utf-8-sig')
-            
+            csv_data = df_rapor.to_csv(index=False).encode('utf-8-sig')
+
+            # 2. ZIP Dosyasını Hafızada Oluşturma
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                # CSV dosyasını ZIP'in içine ekle
+                zip_file.writestr("LIFTUP_Detayli_Analiz_Raporu.csv", csv_data)
+                
+                # Çizilen Grafiği (PNG formatında) ZIP'in içine ekle
+                if fig is not None:
+                    img_buffer = io.BytesIO()
+                    fig.savefig(img_buffer, format="png", bbox_inches="tight", dpi=300) # 300 DPI yüksek kalite
+                    zip_file.writestr("LIFTUP_Karsilastirma_Grafikleri.png", img_buffer.getvalue())
+
+            # 3. İndirme Butonu
             st.download_button(
-                label="📥 Tüm Senaryo Sonuçlarını CSV Olarak İndir",
-                data=csv_verisi,
-                file_name="LIFTUP_Kestirimci_Bakim_Raporu.csv",
-                mime="text/csv",
+                label="📥 Tüm Sonuçları ve Grafikleri İndir (.ZIP Paketi)",
+                data=zip_buffer.getvalue(),
+                file_name="LIFTUP_Analiz_Paketi.zip",
+                mime="application/zip",
                 use_container_width=True
             )
             # ------------------------------------------------
