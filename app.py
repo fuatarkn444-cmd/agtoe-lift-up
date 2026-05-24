@@ -40,6 +40,13 @@ st.markdown("""
         height: 4px !important;
     }
     
+    /* ÜST BOŞLUK HİZALAMASI (İmza ve Başlığın yukarıya tam oturması için) */
+    .block-container {
+        padding-top: 1.5rem !important;
+        padding-bottom: 2rem !important;
+        max-width: 98% !important;
+    }
+    
     /* Başlıklar */
     h1, h2, h3, h4 {
         color: #004B87 !important;
@@ -96,6 +103,7 @@ st.markdown("""
         border-right: 3px solid #E31837;
     }
 
+    /* REMOVE BEFORE FLIGHT Etiketi */
     [data-testid="stSidebar"]::before {
         content: "REMOVE BEFORE FLIGHT";
         display: block;
@@ -115,7 +123,7 @@ st.markdown("""
 # ------------------------------------------------
 
 # --- İMZA YERİ ---
-st.markdown("<div style='text-align: left; background-color: #E31837; color: white; display: inline-block; padding: 3px 12px; font-family: monospace; font-weight: bold; border-radius: 4px; font-size: 13px; box-shadow: 2px 2px 4px rgba(0,0,0,0.3);'>by Fuat Arıkan</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: left; background-color: #E31837; color: white; display: inline-block; padding: 3px 12px; font-family: monospace; font-weight: bold; border-radius: 4px; font-size: 13px; margin-bottom: 10px; box-shadow: 2px 2px 4px rgba(0,0,0,0.3);'>by Fuat Arıkan</div>", unsafe_allow_html=True)
 
 # --- HEADER ---
 col_baslik, col_logo = st.columns([5, 1])
@@ -405,29 +413,30 @@ for i, sekme in enumerate(sekmeler):
             cmm_str = st.text_input(f"CMM Verileri ({birim_ad}, Boşluklu)", value="", placeholder=cmm_ornek, key=f"cmm_{i}")
             if not cmm_str: eksik_alanlar.append(f"{isim}: CMM Verileri")
 
-        # --- YENİ SAĞ PANEL (Fizik Motoru Detayları) ---
+        # --- YENİ SAĞ PANEL (Hatasız ve Streamlit Bileşenli) ---
         with colC:
-            st.markdown("**🧠 Yapay Zeka & Fizik Motoru**")
+            st.markdown("#### 🧠 Akıllı Fizik Motoru")
             
             # Tolerans Durumu
             if tol_siniri:
-                st.success(f"**Tolerans Sınırı:** {tol_siniri} {birim_ad}")
+                st.metric("Aktif Tolerans", f"{tol_siniri} {birim_ad}")
             else:
                 st.warning("Tolerans belirlenmedi.")
 
             # Alaşım Fiziksel Verileri
             if s_malzeme:
-                st.info(f"**Aktif Alaşım:** {s_malzeme_isim}\n\n**Özgül Kesme (Kc):** {s_malzeme['kc']} MPa\n\n**Taylor Sabiti:** {s_malzeme['c_taylor']:.1e}")
+                with st.expander("📊 Alaşım Detayları", expanded=True):
+                    st.write(f"**Alaşım:** {s_malzeme_isim}")
+                    st.write(f"**Kc:** {s_malzeme['kc']} MPa")
+                    st.write(f"**Taylor Sabiti:** {s_malzeme['c_taylor']:.1e}")
             else:
                 st.warning("Malzeme seçimi bekleniyor...")
                 
             # Arka plan bilgilendirme kartı
-            st.markdown("""
-            <div style='background-color:rgba(248, 249, 250, 0.05); padding:10px; border-radius:5px; font-size:12px; border-left: 3px solid #004B87; box-shadow: 1px 1px 3px rgba(0,0,0,0.1); margin-top: 10px;'>
-            <b>Arka Plan Matematiği:</b><br>
-            Sistem, girilen CAM verilerini kullanarak anlık talaş kalınlığını hesaplar. Elde edilen efektif kesme kuvveti, Taylor Takım Ömrü denklemi ile entegre edilerek teorik kırılma ufku belirlenir. Makine öğrenmesi modeli CMM sapmalarını bu fiziksel ufukla kıyaslar.
-            </div>
-            """, unsafe_allow_html=True)
+            st.info("""
+            **Arka Plan Matematiği:**
+            Sistem, girilen CAM verilerini kullanarak anlık talaş kalınlığını hesaplar. Efektif kesme kuvveti, Taylor ömür denklemi ile entegre edilerek Kırılma Ufkunu belirler.
+            """)
 
         senaryo_verileri.append({
             "isim": isim, "mat_isim": s_malzeme_isim, "mat_data": s_malzeme,
