@@ -6,8 +6,8 @@ from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.metrics import mean_squared_error
 import os
-import io          # <-- ZIP ve Görsel kaydetmek için eklendi
-import zipfile     # <-- ZIP arşivi oluşturmak için eklendi
+import io          
+import zipfile     
 
 st.set_page_config(page_title="LIFT-UP Kestirimci Bakım", page_icon=" ✈️ ", layout="wide")
 
@@ -202,7 +202,6 @@ class AI_ToolLife:
         future_blocks = np.arange(1, grafik_son_blok + 1).reshape(-1, 1)
         future_y = model.predict(poly.transform(future_blocks))
         
-        # PARAMETRELERİN TAMAMINI SÖZLÜĞE KAYDEDİYORUZ Kİ CSV'YE AKTARABİLELİM
         self.scenarios[name] = {
             'mat_name': mat_name, 'b_raw': blocks, 'y_raw': wear_data,
             'b_fut': future_blocks.flatten(), 'y_fut': future_y,
@@ -214,7 +213,7 @@ class AI_ToolLife:
             'veri_sayisi': veri_sayisi,
             'uzak_tahmin_uyarisi': uzak_tahmin_uyarisi,
             'karsilastirma_durumu': karsilastirma_durumu,
-            'D': D, 'z': z, 'Lc': Lc, 'Vc': Vc, 'fz': fz, 'ap': ap, 'ae': ae # Yeni Eklenen Parametreler
+            'D': D, 'z': z, 'Lc': Lc, 'Vc': Vc, 'fz': fz, 'ap': ap, 'ae': ae 
         }
 
     def plot_dashboard(self):
@@ -288,8 +287,7 @@ class AI_ToolLife:
         ax2.set_xlim(0, genel_max_time)
         fig.tight_layout(pad=2.0)
         st.pyplot(fig)
-        return fig # Grafik objesini dışarıya aktarıyoruz ki kaydedebilelim
-
+        return fig 
 
 MALZEMELER = {
     "Alüminyum 6061-T6": {"kc": 800, "c_taylor": 4.5e10},
@@ -428,14 +426,23 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
                 cmm_vals = [float(x) for x in d["cmm_str"].replace(',', ' ').split()]
                 system.add_scenario(d["isim"], d["mat_isim"], d["mat_data"]['kc'], d["mat_data"]['c_taylor'], d["t_cap"], d["t_dis"], d["t_boy"], d["vc"], d["fz"], d["ap"], d["ae"], list(range(1, len(cmm_vals) + 1)), cmm_vals, d["cam_sure"])
             
-            # Grafiği çizdirip objeyi 'fig' değişkenine alıyoruz
             fig = system.plot_dashboard()
 
-            # --- YENİ EKLENEN KISIM: ZIP (Görsel + Detaylı Tablo) İNDİRME ÖZELLİĞİ ---
+            # --- GÜNCELLENEN KISIM: EXCEL VE ÖZEL DOSYA ADI ---
             st.markdown("---")
             st.subheader(" 📦 Tüm Analiz Paketini Kaydet")
             
-            # 1. Rapor Verilerini Hazırlama (Tüm Giriş Çıkış Parametreleri ile Birlikte)
+            # Kullanıcıya dosya ismini soruyoruz
+            dosya_ismi_girdisi = st.text_input("📁 İndirilecek Dosyanın Adını Belirleyin:", value="LIFTUP_Rapor")
+            
+            # Boşlukları temizleyip uzantıları ayarlıyoruz
+            temiz_isim = dosya_ismi_girdisi.strip()
+            if not temiz_isim:
+                temiz_isim = "LIFTUP_Rapor"
+                
+            zip_isim = f"{temiz_isim}.zip"
+            excel_isim = f"{temiz_isim}_Detay.xlsx"
+            
             rapor_verileri = []
             for isim, veri in system.scenarios.items():
                 rapor_verileri.append({
@@ -449,7 +456,7 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
                     "Eksenel Derinlik (ap) [mm]": veri['ap'],
                     "Radyal Derinlik (ae) [mm]": veri['ae'],
                     "İşleme Süresi (Dk/Blok)": veri['cam_cycle_time'],
-                    "Girilen CMM Verileri": " - ".join(map(str, veri['y_raw'])), # Girdiğin verileri tek bir hücrede listeler
+                    "Girilen CMM Verileri": " - ".join(map(str, veri['y_raw'])), 
                     "Teorik Takım Ömrü (Dk)": round(veri['t_theo'], 2),
                     "Tam Kırılma Noktası (Blok)": veri['guven_araligi_metni'],
                     "Tam Kırılma Noktası (Zaman)": veri['sure_araligi_metni'],
@@ -458,29 +465,32 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
                 })
             
             df_rapor = pd.DataFrame(rapor_verileri)
-            csv_data = df_rapor.to_csv(index=False).encode('utf-8-sig')
+            
+            # CSV yerine Doğrudan Excel Formatında (.xlsx) hafızaya yazıyoruz
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                df_rapor.to_excel(writer, index=False, sheet_name='Analiz Raporu')
+            
+            excel_data = excel_buffer.getvalue()
 
-            # 2. ZIP Dosyasını Hafızada Oluşturma
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                # CSV dosyasını ZIP'in içine ekle
-                zip_file.writestr("LIFTUP_Detayli_Analiz_Raporu.csv", csv_data)
+                # Excel'i ekliyoruz
+                zip_file.writestr(excel_isim, excel_data)
                 
-                # Çizilen Grafiği (PNG formatında) ZIP'in içine ekle
+                # Grafiği ekliyoruz
                 if fig is not None:
                     img_buffer = io.BytesIO()
-                    fig.savefig(img_buffer, format="png", bbox_inches="tight", dpi=300) # 300 DPI yüksek kalite
-                    zip_file.writestr("LIFTUP_Karsilastirma_Grafikleri.png", img_buffer.getvalue())
+                    fig.savefig(img_buffer, format="png", bbox_inches="tight", dpi=300) 
+                    zip_file.writestr(f"{temiz_isim}_Grafikler.png", img_buffer.getvalue())
 
-            # 3. İndirme Butonu
             st.download_button(
-                label="📥 Tüm Sonuçları ve Grafikleri İndir (.ZIP Paketi)",
+                label=f"📥 Sonuçları İndir ({zip_isim})",
                 data=zip_buffer.getvalue(),
-                file_name="LIFTUP_Analiz_Paketi.zip",
+                file_name=zip_isim,
                 mime="application/zip",
                 use_container_width=True
             )
-            # ------------------------------------------------
 
         except Exception as e:
             st.error(f"CMM Verisi veya sayısal format hatası: {e}. Lütfen sadece sayıları ve boşlukları kullandığınızdan emin olun.")
