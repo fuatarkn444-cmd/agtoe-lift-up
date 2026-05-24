@@ -164,18 +164,19 @@ class AI_ToolLife:
         uzak_tahmin_uyarisi = False
         
         if valid_roots:
-            exact_cross = min(valid_roots)
+            raw_cross = min(valid_roots)
+            
+            # --- MÜHENDİSLİK YAKLAŞIMI: En yakın 0.25'e (Çeyrek bloğa) yuvarlama ---
+            exact_cross = round(raw_cross * 4) / 4
+            if exact_cross <= 0:
+                exact_cross = 0.25 # Çok küçük değerlerde 0 olmasını engellemek için
+                
             grafik_son_blok = min(int(np.ceil(exact_cross)) + 2, 5000)
 
             if exact_cross > (max_blok * 5):
                 uzak_tahmin_uyarisi = True
             
-            tam_blok = int(exact_cross)
-            yuzde = int(round((exact_cross - tam_blok) * 100))
-            if yuzde == 100:
-                tam_blok += 1
-                yuzde = 0
-
+            # --- ZAMAN HESABINI YUVARLANMIŞ 'exact_cross' ÜZERİNDEN YAPIYORUZ ---
             exact_time_minutes = exact_cross * cam_cycle_time
             dk = int(exact_time_minutes)
             sn = int(round((exact_time_minutes - dk) * 60))
@@ -191,13 +192,9 @@ class AI_ToolLife:
             elif oran <= 0.15:
                 karsilastirma_durumu = "hata_kucuk"
             
-            if yuzde == 0:
-                guven_araligi_metni = f"{tam_blok}.00 Blok"
-                uretim_metni = f"**{tam_blok} tam blok** risksiz üretilir. Takım tam **{tam_blok}. bloğun bitiminde** tolerans sınırını aşacaktır."
-            else:
-                guven_araligi_metni = f"{exact_cross:.2f} Blok"
-                uretim_metni = f"**{tam_blok} tam blok** risksiz üretilir. Yeni bloğa geçildiğinde kesimin **%{yuzde}'sinde** (Eksen Değeri: **{exact_cross:.2f}**) tolerans aşılır."
-            
+            # Görüntülenecek sadeleştirilmiş metinler
+            guven_araligi_metni = f"{exact_cross:.2f} Blok"
+            uretim_metni = f"{exact_cross:.2f}. blokta aşınır."
             sure_araligi_metni = f"{dk} Dk {sn} Sn"
         else:
             grafik_son_blok = int(max_blok * 1.5)
@@ -258,7 +255,7 @@ class AI_ToolLife:
             col2.metric("Tam Kırılma Noktası (Blok)", data['guven_araligi_metni'])
             col3.metric("Tam Kırılma Noktası (Zaman)", data['sure_araligi_metni'])
 
-            st.info(f" 🟢  **Operasyon Önerisi:** {data['uretim_metni']}")
+            st.info(f" 🎯  **Tahmini Aşınma Noktası:** {data['uretim_metni']}")
 
             if data['veri_sayisi'] < 3:
                 st.error(" ⚠️  **Düşük Veri Yoğunluğu:** Modele 3'ten az ölçüm girilmiştir.")
@@ -421,7 +418,6 @@ for i, sekme in enumerate(sekmeler):
 
 st.markdown("---")
 
-# Butonun tıklanma anı (Burada sadece hesaplama yapıp hafızaya atıyoruz)
 if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True, type="primary"):
     if len(eksik_alanlar) > 0:
         hata_metni = "\n".join([f"- {alan}" for alan in list(set(eksik_alanlar))])
@@ -434,7 +430,6 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
                 cmm_vals = [float(x.replace(',', '.')) for x in d["cmm_str"].split()]
                 system.add_scenario(d["isim"], d["mat_isim"], d["mat_data"]['kc'], d["mat_data"]['c_taylor'], d["t_cap"], d["t_dis"], d["t_boy"], d["vc"], d["fz"], d["ap"], d["ae"], list(range(1, len(cmm_vals) + 1)), cmm_vals, d["cam_sure"])
             
-            # Sonuçları hafızaya kaydediyoruz
             st.session_state.sistem_verisi = system
             st.session_state.analiz_yapildi = True
 
@@ -442,18 +437,15 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
             st.error(f"CMM Verisi veya sayısal format hatası: {e}. Lütfen sadece sayıları ve boşlukları kullandığınızdan emin olun.")
             st.session_state.analiz_yapildi = False
 
-# Eğer hafızada analiz sonucu varsa, sayfayı yenilesek bile grafik ve indirme kısmı hep açık kalacak
 if st.session_state.analiz_yapildi and st.session_state.sistem_verisi is not None:
     system = st.session_state.sistem_verisi
     
-    # Grafiği çizdir
     fig = system.plot_dashboard()
 
     # --- RAPORLAMA VE TRANSPOZE EXCEL KISMI ---
     st.markdown("---")
     st.subheader(" 📦 Tüm Analiz Paketini Kaydet")
     
-    # Kullanıcı buraya yazı yazdığında sayfa yenilenecek ama veriler "session_state" içinde olduğu için silinmeyecek.
     dosya_ismi_girdisi = st.text_input("📁 İndirilecek Dosyanın Adını Belirleyin:", value="LIFTUP_Rapor")
     temiz_isim = dosya_ismi_girdisi.strip()
     if not temiz_isim:
@@ -490,7 +482,7 @@ if st.session_state.analiz_yapildi and st.session_state.sistem_verisi is not Non
             "Yapay Zeka Kırılma Ufku (Blok)": veri['guven_araligi_metni'],
             "Yapay Zeka Kırılma Ufku (Zaman)": veri['sure_araligi_metni'],
             "Model Hata Sapması (RMSE)": round(veri['rmse_val'], 4),
-            "Otonom Operasyon Önerisi": veri['uretim_metni'].replace('*', '') 
+            "Tahmini Aşınma Noktası": veri['uretim_metni'].replace('*', '') 
         })
     
     df_rapor = pd.DataFrame(rapor_verileri)
