@@ -11,6 +11,14 @@ import zipfile
 
 st.set_page_config(page_title="LIFT-UP Kestirimci Bakım", page_icon=" ✈️ ", layout="wide")
 
+# --- KALICI HAFIZA (SESSION STATE) TANIMLAMALARI ---
+if 'ilk_giris' not in st.session_state:
+    st.session_state.ilk_giris = True
+if 'analiz_yapildi' not in st.session_state:
+    st.session_state.analiz_yapildi = False
+if 'sistem_verisi' not in st.session_state:
+    st.session_state.sistem_verisi = None
+
 # --- KARŞILAMA EKRANI (POP-UP) MANTIĞI ---
 @st.dialog(" ✈️  LIFT-UP Sistemine Hoş Geldiniz")
 def rehber_dialog():
@@ -20,14 +28,12 @@ def rehber_dialog():
     ###  🛠️  Nasıl Kullanılır?
     1. **Birim ve Tolerans:** Sol menüden ölçüm biriminizi (Mikron/mm) ve tezgâhın maksimum aşınma toleransını girin.
     2. **Parametreler:** Kullanacağınız malzeme, takım ölçüleri ve CAM kesme verilerini eksiksiz doldurun.
-    3. **CMM Verileri:** Ölçtüğünüz aşınma değerlerini aralarında boşluk bırakarak yazın *(Örn: 0.2 0.5 0.8...)*.
-    4. **Analiz:** 'Tahmini Başlat' butonuna basın ve yapay zekanın operasyon önerilerin inceleyin.
+    3. **CMM Verileri:** Ölçtüğünüz aşınma değerlerini aralarında boşluk bırakarak yazın *(Örn: 0.2 0.5 0.8... veya 0,2 0,5 0,8...)*.
+    4. **Analiz:** 'Tahmini Başlat' butonuna basın ve yapay zekanın operasyon önerilerini inceleyin.
 
     *(Bu bilgilendirme penceresini sağ üstteki 'X' işaretine basarak kapatabilirsiniz.)*
     """)
 
-if 'ilk_giris' not in st.session_state:
-    st.session_state.ilk_giris = True
 if st.session_state.ilk_giris:
     rehber_dialog()
     st.session_state.ilk_giris = False
@@ -229,7 +235,6 @@ class AI_ToolLife:
         
         for i, (name, data) in enumerate(self.scenarios.items()):
             col = colors[i % len(colors)]
-            etiket = f"{name} ({data['mat_name']})"
             
             st.markdown(f"""
             <div style='background-color:{col}; color:white; padding:5px 15px; border-radius:5px; display:inline-block; margin-top:15px; font-weight:bold; box-shadow: 2px 2px 4px rgba(0,0,0,0.2);'>
@@ -415,93 +420,105 @@ for i, sekme in enumerate(sekmeler):
         })
 
 st.markdown("---")
+
+# Butonun tıklanma anı (Burada sadece hesaplama yapıp hafızaya atıyoruz)
 if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True, type="primary"):
     if len(eksik_alanlar) > 0:
         hata_metni = "\n".join([f"- {alan}" for alan in list(set(eksik_alanlar))])
         st.error(f" ⚠️  Lütfen analizi başlatmadan önce aşağıdaki eksik bilgileri doldurunuz:\n\n{hata_metni}")
+        st.session_state.analiz_yapildi = False
     else:
         try:
             system = AI_ToolLife(tolerance=tol_siniri, birim_ad=birim_ad)
             for d in senaryo_verileri:
-                cmm_vals = [float(x) for x in d["cmm_str"].replace(',', ' ').split()]
+                cmm_vals = [float(x.replace(',', '.')) for x in d["cmm_str"].split()]
                 system.add_scenario(d["isim"], d["mat_isim"], d["mat_data"]['kc'], d["mat_data"]['c_taylor'], d["t_cap"], d["t_dis"], d["t_boy"], d["vc"], d["fz"], d["ap"], d["ae"], list(range(1, len(cmm_vals) + 1)), cmm_vals, d["cam_sure"])
             
-            fig = system.plot_dashboard()
-
-            # --- DÜZENLENEN RAPORLAMA VE TRANSPOZE EXCEL KISMI ---
-            st.markdown("---")
-            st.subheader(" 📦 Tüm Analiz Paketini Kaydet")
-            
-            dosya_ismi_girdisi = st.text_input("📁 İndirilecek Dosyanın Adını Belirleyin:", value="LIFTUP_Rapor")
-            temiz_isim = dosya_ismi_girdisi.strip()
-            if not temiz_isim:
-                temiz_isim = "LIFTUP_Rapor"
-                
-            zip_isim = f"{temiz_isim}.zip"
-            excel_isim = f"{temiz_isim}_Detay.xlsx"
-            
-            rapor_verileri = []
-            for isim, veri in system.scenarios.items():
-                # Ondalık dakikayı anlaşılır "X Dk Y Sn" formatına geri döndürüyoruz
-                toplam_saniye = round(veri['cam_cycle_time'] * 60)
-                m_dakika = toplam_saniye // 60
-                s_saniye = toplam_saniye % 60
-                temiz_cam_sure_metni = f"{m_dakika} Dk {s_saniye} Sn" if s_saniye > 0 else f"{m_dakika} Dk"
-
-                rapor_verileri.append({
-                    "Senaryo Adı": isim,
-                    "Alaşım Bilgisi": veri['mat_name'],
-                    "Takım Çapı (D) [mm]": veri['D'],
-                    "Takım Diş Sayısı (z)": veri['z'],
-                    "Takım Kesme Boyu (Lc) [mm]": veri['Lc'],
-                    "Kesme Hızı (Vc) [m/min]": veri['Vc'],
-                    "İlerleme Hızı (fz) [mm/diş]": veri['fz'],
-                    "Eksenel Derinlik (ap) [mm]": veri['ap'],
-                    "Radyal Derinlik (ae) [mm]": veri['ae'],
-                    "Aktif CAM Süresi (Dk/Blok)": temiz_cam_sure_metni, # Sayısal yerine anlaşılır metin ekledik
-                    "Ölçülen CMM Verileri": " - ".join(map(str, veri['y_raw'])), 
-                    "Teorik Takım Ömrü (Dk)": round(veri['t_theo'], 2),
-                    "Yapay Zeka Kırılma Ufku (Blok)": veri['guven_araligi_metni'],
-                    "Yapay Zeka Kırılma Ufku (Zaman)": veri['sure_araligi_metni'],
-                    "Model Hata Sapması (RMSE)": round(veri['rmse_val'], 4),
-                    "Otonom Operasyon Önerisi": veri['uretim_metni'].replace('*', '') 
-                })
-            
-            # Verileri DataFrame formatına alıyoruz
-            df_rapor = pd.DataFrame(rapor_verileri)
-            
-            # Senaryo İsimlerini satır indeksine taşıyoruz
-            df_rapor.set_index("Senaryo Adı", inplace=True)
-            
-            # Tabloyu ters çeviriyoruz (Böylece sütunlar Senaryolar oluyor)
-            df_rapor_transpoze = df_rapor.T
-            df_rapor_transpoze.index.name = "Parametreler ve Sonuçlar"
-            
-            # Sütun düzenini sabitlemek için indeksi normale çekiyoruz
-            df_rapor_final = df_rapor_transpoze.reset_index()
-            
-            excel_buffer = io.BytesIO()
-            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                df_rapor_final.to_excel(writer, index=False, sheet_name='Kıyaslama Analizi')
-            
-            excel_data = excel_buffer.getvalue()
-
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                zip_file.writestr(excel_isim, excel_data)
-                
-                if fig is not None:
-                    img_buffer = io.BytesIO()
-                    fig.savefig(img_buffer, format="png", bbox_inches="tight", dpi=300) 
-                    zip_file.writestr(f"{temiz_isim}_Grafikler.png", img_buffer.getvalue())
-
-            st.download_button(
-                label="📥 " + zip_isim + " Paketini İndir",
-                data=zip_buffer.getvalue(),
-                file_name=zip_isim,
-                mime="application/zip",
-                use_container_width=True
-            )
+            # Sonuçları hafızaya kaydediyoruz
+            st.session_state.sistem_verisi = system
+            st.session_state.analiz_yapildi = True
 
         except Exception as e:
             st.error(f"CMM Verisi veya sayısal format hatası: {e}. Lütfen sadece sayıları ve boşlukları kullandığınızdan emin olun.")
+            st.session_state.analiz_yapildi = False
+
+# Eğer hafızada analiz sonucu varsa, sayfayı yenilesek bile grafik ve indirme kısmı hep açık kalacak
+if st.session_state.analiz_yapildi and st.session_state.sistem_verisi is not None:
+    system = st.session_state.sistem_verisi
+    
+    # Grafiği çizdir
+    fig = system.plot_dashboard()
+
+    # --- RAPORLAMA VE TRANSPOZE EXCEL KISMI ---
+    st.markdown("---")
+    st.subheader(" 📦 Tüm Analiz Paketini Kaydet")
+    
+    # Kullanıcı buraya yazı yazdığında sayfa yenilenecek ama veriler "session_state" içinde olduğu için silinmeyecek.
+    dosya_ismi_girdisi = st.text_input("📁 İndirilecek Dosyanın Adını Belirleyin:", value="LIFTUP_Rapor")
+    temiz_isim = dosya_ismi_girdisi.strip()
+    if not temiz_isim:
+        temiz_isim = "LIFTUP_Rapor"
+        
+    zip_isim = f"{temiz_isim}.zip"
+    excel_isim = f"{temiz_isim}_Detay.xlsx"
+    
+    rapor_verileri = []
+    for isim, veri in system.scenarios.items():
+        toplam_saniye = round(veri['cam_cycle_time'] * 60)
+        m_dakika = toplam_saniye // 60
+        s_saniye = toplam_saniye % 60
+        temiz_cam_sure_metni = f"{m_dakika} Dk {s_saniye} Sn" if s_saniye > 0 else f"{m_dakika} Dk"
+
+        t_theo_toplam_saniye = round(veri['t_theo'] * 60)
+        t_theo_dakika = t_theo_toplam_saniye // 60
+        t_theo_saniye = t_theo_toplam_saniye % 60
+        temiz_t_theo_metni = f"{t_theo_dakika} Dakika {t_theo_saniye} Saniye" if t_theo_saniye > 0 else f"{t_theo_dakika} Dakika"
+
+        rapor_verileri.append({
+            "Senaryo Adı": isim,
+            "Alaşım Bilgisi": veri['mat_name'],
+            "Takım Çapı (D) [mm]": veri['D'],
+            "Takım Diş Sayısı (z)": veri['z'],
+            "Takım Kesme Boyu (Lc) [mm]": veri['Lc'],
+            "Kesme Hızı (Vc) [m/min]": veri['Vc'],
+            "İlerleme Hızı (fz) [mm/diş]": veri['fz'],
+            "Eksenel Derinlik (ap) [mm]": veri['ap'],
+            "Radyal Derinlik (ae) [mm]": veri['ae'],
+            "Aktif CAM Süresi (Dk/Blok)": temiz_cam_sure_metni,
+            "Ölçülen CMM Verileri": " - ".join(map(str, veri['y_raw'])), 
+            "Teorik Takım Ömrü": temiz_t_theo_metni,
+            "Yapay Zeka Kırılma Ufku (Blok)": veri['guven_araligi_metni'],
+            "Yapay Zeka Kırılma Ufku (Zaman)": veri['sure_araligi_metni'],
+            "Model Hata Sapması (RMSE)": round(veri['rmse_val'], 4),
+            "Otonom Operasyon Önerisi": veri['uretim_metni'].replace('*', '') 
+        })
+    
+    df_rapor = pd.DataFrame(rapor_verileri)
+    df_rapor.set_index("Senaryo Adı", inplace=True)
+    
+    df_rapor_transpoze = df_rapor.T
+    df_rapor_transpoze.index.name = "Parametreler ve Sonuçlar"
+    df_rapor_final = df_rapor_transpoze.reset_index()
+    
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        df_rapor_final.to_excel(writer, index=False, sheet_name='Kıyaslama Analizi')
+    
+    excel_data = excel_buffer.getvalue()
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.writestr(excel_isim, excel_data)
+        
+        if fig is not None:
+            img_buffer = io.BytesIO()
+            fig.savefig(img_buffer, format="png", bbox_inches="tight", dpi=300) 
+            zip_file.writestr(f"{temiz_isim}_Grafikler.png", img_buffer.getvalue())
+
+    st.download_button(
+        label="📥 " + zip_isim + " Paketini İndir",
+        data=zip_buffer.getvalue(),
+        file_name=zip_isim,
+        mime="application/zip",
+        use_container_width=True
+    )
