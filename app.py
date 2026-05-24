@@ -21,7 +21,7 @@ def rehber_dialog():
     1. **Birim ve Tolerans:** Sol menüden ölçüm biriminizi (Mikron/mm) ve tezgâhın maksimum aşınma toleransını girin.
     2. **Parametreler:** Kullanacağınız malzeme, takım ölçüleri ve CAM kesme verilerini eksiksiz doldurun.
     3. **CMM Verileri:** Ölçtüğünüz aşınma değerlerini aralarında boşluk bırakarak yazın *(Örn: 0.2 0.5 0.8...)*.
-    4. **Analiz:** 'Tahmini Başlat' butonuna basın ve yapay zekanın operasyon önerilerini inceleyin.
+    4. **Analiz:** 'Tahmini Başlat' butonuna basın ve yapay zekanın operasyon önerilerin inceleyin.
 
     *(Bu bilgilendirme penceresini sağ üstteki 'X' işaretine basarak kapatabilirsiniz.)*
     """)
@@ -428,14 +428,11 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
             
             fig = system.plot_dashboard()
 
-            # --- GÜNCELLENEN KISIM: EXCEL VE ÖZEL DOSYA ADI ---
+            # --- DÜZENLENEN RAPORLAMA VE TRANSPOZE EXCEL KISMI ---
             st.markdown("---")
             st.subheader(" 📦 Tüm Analiz Paketini Kaydet")
             
-            # Kullanıcıya dosya ismini soruyoruz
             dosya_ismi_girdisi = st.text_input("📁 İndirilecek Dosyanın Adını Belirleyin:", value="LIFTUP_Rapor")
-            
-            # Boşlukları temizleyip uzantıları ayarlıyoruz
             temiz_isim = dosya_ismi_girdisi.strip()
             if not temiz_isim:
                 temiz_isim = "LIFTUP_Rapor"
@@ -445,47 +442,61 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
             
             rapor_verileri = []
             for isim, veri in system.scenarios.items():
+                # Ondalık dakikayı anlaşılır "X Dk Y Sn" formatına geri döndürüyoruz
+                toplam_saniye = round(veri['cam_cycle_time'] * 60)
+                m_dakika = toplam_saniye // 60
+                s_saniye = toplam_saniye % 60
+                temiz_cam_sure_metni = f"{m_dakika} Dk {s_saniye} Sn" if s_saniye > 0 else f"{m_dakika} Dk"
+
                 rapor_verileri.append({
                     "Senaryo Adı": isim,
-                    "Alaşım": veri['mat_name'],
+                    "Alaşım Bilgisi": veri['mat_name'],
                     "Takım Çapı (D) [mm]": veri['D'],
-                    "Diş Sayısı (z)": veri['z'],
-                    "Kesme Boyu (Lc) [mm]": veri['Lc'],
+                    "Takım Diş Sayısı (z)": veri['z'],
+                    "Takım Kesme Boyu (Lc) [mm]": veri['Lc'],
                     "Kesme Hızı (Vc) [m/min]": veri['Vc'],
-                    "İlerleme (fz) [mm/diş]": veri['fz'],
+                    "İlerleme Hızı (fz) [mm/diş]": veri['fz'],
                     "Eksenel Derinlik (ap) [mm]": veri['ap'],
                     "Radyal Derinlik (ae) [mm]": veri['ae'],
-                    "İşleme Süresi (Dk/Blok)": veri['cam_cycle_time'],
-                    "Girilen CMM Verileri": " - ".join(map(str, veri['y_raw'])), 
+                    "Aktif CAM Süresi (Dk/Blok)": temiz_cam_sure_metni, # Sayısal yerine anlaşılır metin ekledik
+                    "Ölçülen CMM Verileri": " - ".join(map(str, veri['y_raw'])), 
                     "Teorik Takım Ömrü (Dk)": round(veri['t_theo'], 2),
-                    "Tam Kırılma Noktası (Blok)": veri['guven_araligi_metni'],
-                    "Tam Kırılma Noktası (Zaman)": veri['sure_araligi_metni'],
-                    "Model Sapması (RMSE)": round(veri['rmse_val'], 4),
-                    "Operasyon Önerisi": veri['uretim_metni'].replace('*', '') 
+                    "Yapay Zeka Kırılma Ufku (Blok)": veri['guven_araligi_metni'],
+                    "Yapay Zeka Kırılma Ufku (Zaman)": veri['sure_araligi_metni'],
+                    "Model Hata Sapması (RMSE)": round(veri['rmse_val'], 4),
+                    "Otonom Operasyon Önerisi": veri['uretim_metni'].replace('*', '') 
                 })
             
+            # Verileri DataFrame formatına alıyoruz
             df_rapor = pd.DataFrame(rapor_verileri)
             
-            # CSV yerine Doğrudan Excel Formatında (.xlsx) hafızaya yazıyoruz
+            # Senaryo İsimlerini satır indeksine taşıyoruz
+            df_rapor.set_index("Senaryo Adı", inplace=True)
+            
+            # Tabloyu ters çeviriyoruz (Böylece sütunlar Senaryolar oluyor)
+            df_rapor_transpoze = df_rapor.T
+            df_rapor_transpoze.index.name = "Parametreler ve Sonuçlar"
+            
+            # Sütun düzenini sabitlemek için indeksi normale çekiyoruz
+            df_rapor_final = df_rapor_transpoze.reset_index()
+            
             excel_buffer = io.BytesIO()
             with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                df_rapor.to_excel(writer, index=False, sheet_name='Analiz Raporu')
+                df_rapor_final.to_excel(writer, index=False, sheet_name='Kıyaslama Analizi')
             
             excel_data = excel_buffer.getvalue()
 
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                # Excel'i ekliyoruz
                 zip_file.writestr(excel_isim, excel_data)
                 
-                # Grafiği ekliyoruz
                 if fig is not None:
                     img_buffer = io.BytesIO()
                     fig.savefig(img_buffer, format="png", bbox_inches="tight", dpi=300) 
                     zip_file.writestr(f"{temiz_isim}_Grafikler.png", img_buffer.getvalue())
 
             st.download_button(
-                label=f"📥 Sonuçları İndir ({zip_isim})",
+                label="📥 " + zip_isim + " Paketini İndir",
                 data=zip_buffer.getvalue(),
                 file_name=zip_isim,
                 mime="application/zip",
