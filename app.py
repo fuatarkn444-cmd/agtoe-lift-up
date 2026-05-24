@@ -23,13 +23,13 @@ if 'sistem_verisi' not in st.session_state:
 @st.dialog(" ✈️  LIFT-UP Sistemine Hoş Geldiniz")
 def rehber_dialog():
     st.markdown("""
-    **Bu sistem, Makine Öğrenmesi ve Taylor Denklemlerini harmanlayarak takım ömrünü otonom olarak tahmin eder.**
+    **Bu sistem, İstatistiksel Regresyon ve Taylor Denklemlerini harmanlayarak takım ömrünü kestirimci olarak tahmin eder.**
 
     ###  🛠️  Nasıl Kullanılır?
     1. **Birim ve Tolerans:** Sol menüden ölçüm biriminizi (Mikron/mm) ve tezgâhın maksimum aşınma toleransını girin.
     2. **Parametreler:** Kullanacağınız malzeme, takım ölçüleri ve CAM kesme verilerini eksiksiz doldurun.
     3. **CMM Verileri:** Ölçtüğünüz aşınma değerlerini aralarında boşluk bırakarak yazın *(Örn: 0.2 0.5 0.8... veya 0,2 0,5 0,8...)*.
-    4. **Analiz:** 'Tahmini Başlat' butonuna basın ve yapay zekanın operasyon önerilerini inceleyin.
+    4. **Analiz:** 'Tahmini Başlat' butonuna basın ve modelin hesapladığı aşınma tahminlerini inceleyin.
 
     *(Bu bilgilendirme penceresini sağ üstteki 'X' işaretine basarak kapatabilirsiniz.)*
     """)
@@ -258,9 +258,9 @@ class AI_ToolLife:
             st.info(f" 🎯  **Tahmini Aşınma Noktası:** {data['uretim_metni']}")
 
             if data['veri_sayisi'] < 3:
-                st.error(" ⚠️  **Düşük Veri Yoğunluğu:** Modele 3'ten az ölçüm girilmiştir.")
+                st.error(" ⚠️  **Düşük Veri Yoğunluğu:** Kestirimci modele 3'ten az ölçüm girilmiştir.")
             if data['uzak_tahmin_uyarisi']:
-                st.warning(" 🔭  **Aşırı Uzak Tahmin:** Uzun vadeli tahminler yanıltıcı olabilir.")
+                st.warning(" 🔭  **Aşırı Uzak Tahmin:** Uzun vadeli tahminler istatistiksel olarak yanıltıcı olabilir.")
             if data['karsilastirma_durumu'] == "hata_buyuk":
                 st.error(f" 🛑  **Fiziksel Tutarsızlık İhtimali:** Hesaplanan süre Teorik Takım Ömrünü ({data['t_theo']:.1f} Dk) aşıyor.")
             elif data['karsilastirma_durumu'] == "tebrikler":
@@ -392,7 +392,7 @@ for i, sekme in enumerate(sekmeler):
             if not cmm_str: eksik_alanlar.append(f"{isim}: CMM Verileri")
 
         with colC:
-            st.markdown("** 🧠  Yapay Zeka & Fizik Motoru**")
+            st.markdown("** 🧠  Analitik & Fizik Motoru**")
             if tol_siniri:
                 st.success(f"**Tolerans Sınırı:** {tol_siniri} {birim_ad}")
             else:
@@ -406,7 +406,7 @@ for i, sekme in enumerate(sekmeler):
             <div style='background-color:rgba(248, 249, 250, 0.05); padding:10px; border-radius:5px; font-size:12px; border-left: 3px solid #004B87; box-shadow: 1px 1px 3px rgba(0,0,0,0.1); margin-top: 10px;'>
             <b>Arka Plan Matematiği:</b><br>
             Sistem, girilen CAM verilerini kullanarak anlık talaş kalınlığını hesaplar. Elde edilen efektif kesme kuvveti, Taylor Takım Ömrü denklemi ile entegre edilerek teorik kırılma ufku belirlenir.
-            Makine öğrenmesi modeli CMM sapmalarını bu fiziksel ufukla kıyaslar.
+            Regresyon modeli, CMM sapmalarını bu fiziksel ufukla kıyaslar.
             </div>
             """, unsafe_allow_html=True)
 
@@ -479,8 +479,8 @@ if st.session_state.analiz_yapildi and st.session_state.sistem_verisi is not Non
             "Aktif CAM Süresi (Dk/Blok)": temiz_cam_sure_metni,
             "Ölçülen CMM Verileri": " - ".join(map(str, veri['y_raw'])), 
             "Teorik Takım Ömrü": temiz_t_theo_metni,
-            "Yapay Zeka Kırılma Ufku (Blok)": veri['guven_araligi_metni'],
-            "Yapay Zeka Kırılma Ufku (Zaman)": veri['sure_araligi_metni'],
+            "Tahmini Kırılma Ufku (Blok)": veri['guven_araligi_metni'],
+            "Tahmini Kırılma Ufku (Zaman)": veri['sure_araligi_metni'],
             "Model Hata Sapması (RMSE)": round(veri['rmse_val'], 4),
             "Tahmini Aşınma Noktası": veri['uretim_metni'].replace('*', '') 
         })
