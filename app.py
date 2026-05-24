@@ -39,14 +39,14 @@ st.markdown("""
         background: linear-gradient(90deg, #004B87, #E31837) !important;
         height: 4px !important;
     }
-    
-    /* ÜST BOŞLUK HİZALAMASI (İmza ve Başlığın yukarıya tam oturması için) */
+
+    /* ÜST BOŞLUK DÜZELTİLDİ - Yazıların kaybolmaması için padding 3rem yapıldı */
     .block-container {
-        padding-top: 1.5rem !important;
+        padding-top: 3rem !important; 
         padding-bottom: 2rem !important;
         max-width: 98% !important;
     }
-    
+
     /* Başlıklar */
     h1, h2, h3, h4 {
         color: #004B87 !important;
@@ -103,7 +103,6 @@ st.markdown("""
         border-right: 3px solid #E31837;
     }
 
-    /* REMOVE BEFORE FLIGHT Etiketi */
     [data-testid="stSidebar"]::before {
         content: "REMOVE BEFORE FLIGHT";
         display: block;
@@ -118,12 +117,23 @@ st.markdown("""
         border-radius: 0 0 5px 5px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.3);
     }
+
+    /* SAĞ PANEL KAPSÜLÜ (Eksik olduğu için HTML bozuk görünüyordu, eklendi) */
+    .right-panel-card {
+        background-color: rgba(136, 136, 136, 0.06); 
+        border-left: 4px solid #004B87;
+        border-top: 4px solid #E31837;
+        border-radius: 8px;
+        padding: 20px;
+        height: 100%;
+        box-shadow: -3px 4px 15px rgba(0,0,0,0.05);
+    }
 </style>
 """, unsafe_allow_html=True)
 # ------------------------------------------------
 
 # --- İMZA YERİ ---
-st.markdown("<div style='text-align: left; background-color: #E31837; color: white; display: inline-block; padding: 3px 12px; font-family: monospace; font-weight: bold; border-radius: 4px; font-size: 13px; margin-bottom: 10px; box-shadow: 2px 2px 4px rgba(0,0,0,0.3);'>by Fuat Arıkan</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: left; background-color: #E31837; color: white; display: inline-block; padding: 3px 12px; font-family: monospace; font-weight: bold; border-radius: 4px; font-size: 13px; box-shadow: 2px 2px 4px rgba(0,0,0,0.3);'>by Fuat Arıkan</div>", unsafe_allow_html=True)
 
 # --- HEADER ---
 col_baslik, col_logo = st.columns([5, 1])
@@ -413,30 +423,27 @@ for i, sekme in enumerate(sekmeler):
             cmm_str = st.text_input(f"CMM Verileri ({birim_ad}, Boşluklu)", value="", placeholder=cmm_ornek, key=f"cmm_{i}")
             if not cmm_str: eksik_alanlar.append(f"{isim}: CMM Verileri")
 
-        # --- YENİ SAĞ PANEL (Hatasız ve Streamlit Bileşenli) ---
+        # --- YENİ SAĞ PANEL (HTML formatlı, hatası giderilmiş) ---
         with colC:
-            st.markdown("#### 🧠 Akıllı Fizik Motoru")
+            tol_text = f"{tol_siniri} {birim_ad}" if tol_siniri else "Belirlenmedi"
+            mat_text = f"<b>Alaşım:</b> {s_malzeme_isim}<br><b>Kc:</b> {s_malzeme['kc']} MPa<br><b>Taylor Sabiti:</b> {s_malzeme['c_taylor']:.1e}" if s_malzeme else "Malzeme Bekleniyor..."
             
-            # Tolerans Durumu
-            if tol_siniri:
-                st.metric("Aktif Tolerans", f"{tol_siniri} {birim_ad}")
-            else:
-                st.warning("Tolerans belirlenmedi.")
-
-            # Alaşım Fiziksel Verileri
-            if s_malzeme:
-                with st.expander("📊 Alaşım Detayları", expanded=True):
-                    st.write(f"**Alaşım:** {s_malzeme_isim}")
-                    st.write(f"**Kc:** {s_malzeme['kc']} MPa")
-                    st.write(f"**Taylor Sabiti:** {s_malzeme['c_taylor']:.1e}")
-            else:
-                st.warning("Malzeme seçimi bekleniyor...")
+            st.markdown(f"""
+            <div class='right-panel-card'>
+                <h4 style="margin-top: 0; color: #004B87; border-bottom: 2px solid rgba(136,136,136,0.2); padding-bottom: 10px;">🧠 Akıllı Fizik Motoru</h4>
+                <p style="font-size: 14px; margin-bottom: 5px;"><b>Aktif Tolerans:</b></p>
+                <div style="color: #E31837; font-size: 18px; font-weight: bold; margin-bottom: 15px;">{tol_text}</div>
                 
-            # Arka plan bilgilendirme kartı
-            st.info("""
-            **Arka Plan Matematiği:**
-            Sistem, girilen CAM verilerini kullanarak anlık talaş kalınlığını hesaplar. Efektif kesme kuvveti, Taylor ömür denklemi ile entegre edilerek Kırılma Ufkunu belirler.
-            """)
+                <p style="font-size: 14px; margin-bottom: 5px;"><b>Fiziksel Parametreler:</b></p>
+                <div style="background-color: rgba(0, 75, 135, 0.08); padding: 10px; border-radius: 5px; font-size: 13px; margin-bottom: 15px;">
+                    {mat_text}
+                </div>
+                
+                <div style="font-size: 12px; color: gray; border-left: 2px solid #E31837; padding-left: 10px; font-style: italic;">
+                    Sistem, anlık talaş kalınlığını hesaplar ve efektif kesme kuvvetini Taylor denklemi ile harmanlayarak Kırılma Ufkunu belirler.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
         senaryo_verileri.append({
             "isim": isim, "mat_isim": s_malzeme_isim, "mat_data": s_malzeme,
