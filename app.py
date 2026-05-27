@@ -220,24 +220,26 @@ with st.sidebar:
     is_mikron = "Mikron" in birim_secimi
     birim_ad = "Mikron" if is_mikron else "mm"
     
-    tol_siniri = st.number_input(f"Maksimum Tolerans ({birim_ad})", value=None, format="%g")
+    tol_ornek = "Örn: 5" if is_mikron else "Örn: 0.005"
+    cmm_ornek = "Örn: 0.2 0.5 0.8 1.2" if is_mikron else "Örn: 0.0002 0.0005 0.0008 0.0012"
+
+    tol_siniri = st.number_input(f"Maksimum Tolerans ({birim_ad})", value=None, format="%g", placeholder=tol_ornek)
     senaryo_sayisi = st.number_input("Karşılaştırılacak Takım/Senaryo Sayısı", min_value=1, max_value=5, value=1, step=1)
     
     st.markdown("---")
     ortak_malzeme = st.checkbox("Tüm senaryolarda ortak MALZEME kullan", value=True)
-    genel_malzeme_secimi = st.selectbox("Ortak Hammadde Seçimi", list(MALZEMELER.keys()), index=None) if ortak_malzeme else None
+    genel_malzeme_secimi = st.selectbox("Ortak Hammadde Seçimi", list(MALZEMELER.keys()), index=None, placeholder="Seçiniz...") if ortak_malzeme else None
     
     ortak_takim = st.checkbox("Tüm senaryolarda ortak TAKIM kullan", value=True)
-    genel_t_cap = st.number_input("Ortak Takım Çapı (D) [mm]", value=None, min_value=1) if ortak_takim else None
-    genel_t_dis = st.number_input("Ortak Takım Diş Sayısı (z)", value=None, min_value=1) if ortak_takim else None
-    genel_t_boy = st.number_input("Ortak Takım Kesme Boyu (Lc) [mm]", value=None, min_value=1) if ortak_takim else None
+    genel_t_cap = st.number_input("Ortak Takım Çapı (D) [mm]", value=None, min_value=1, placeholder="Örn: 6") if ortak_takim else None
+    genel_t_dis = st.number_input("Ortak Takım Diş Sayısı (z)", value=None, min_value=1, placeholder="Örn: 4") if ortak_takim else None
+    genel_t_boy = st.number_input("Ortak Takım Kesme Boyu (Lc) [mm]", value=None, min_value=1, placeholder="Örn: 24") if ortak_takim else None
 
 # --- ADIM 2: DOSYA YÜKLEME VE PANDAS İŞLEMLERİ ---
 df_ana = pd.DataFrame()
 if veri_giris_modu == "CMM Dosyası Yükle (Otonom)":
     st.info("💡 **Otonom Mod:** CMM cihazınızdan aldığınız çoklu parçalara ait raporları (.xlsx veya .csv) doğrudan sisteme sürükleyin.")
     
-    # Şablon İndirme Butonu
     df_sablon = pd.DataFrame({
         "Parca_Sira": [1, 2, 3], "Olcum_Adi": ["1_Ø14.5mm", "1_Ø14.5mm", "1_Ø14.5mm"],
         "Nominal": [14.5, 14.5, 14.5], "Ust_Tolerans": [0.1, 0.1, 0.1], 
@@ -252,9 +254,17 @@ if veri_giris_modu == "CMM Dosyası Yükle (Otonom)":
         veri_listesi = []
         for dosya in yuklenen_dosyalar:
             try:
-                # Virgül/nokta problemini Pandas aşamasında çözüyoruz
                 if dosya.name.endswith('.csv'): df_temp = pd.read_csv(dosya, sep=None, engine='python', decimal='.')
                 else: df_temp = pd.read_excel(dosya)
+                
+                # İNGİLİZCE SÜTUNLARI OTOMATİK OLARAK TÜRKÇE ŞABLONA ÇEVİRİYORUZ
+                sutun_haritasi = {
+                    'Dimension': 'Olcum_Adi',
+                    'Measurement': 'Olculen_Deger',
+                    'Upper_Tolerance': 'Ust_Tolerans',
+                    'Lower_Tolerance': 'Alt_Tolerans'
+                }
+                df_temp.rename(columns=sutun_haritasi, inplace=True)
                 
                 if 'Olculen_Deger' in df_temp.columns and df_temp['Olculen_Deger'].dtype == object:
                     df_temp['Olculen_Deger'] = df_temp['Olculen_Deger'].str.replace(',', '.').astype(float)
@@ -265,8 +275,8 @@ if veri_giris_modu == "CMM Dosyası Yükle (Otonom)":
                 
         if veri_listesi:
             df_ana = pd.concat(veri_listesi, ignore_index=True)
-            # Eğer parçalar karışıksa sıraya diz
-            if 'Parca_Sira' in df_ana.columns: df_ana = df_ana.sort_values(by=['Olcum_Adi', 'Parca_Sira'])
+            if 'Parca_Sira' in df_ana.columns and 'Olcum_Adi' in df_ana.columns: 
+                df_ana = df_ana.sort_values(by=['Olcum_Adi', 'Parca_Sira'])
 
 st.markdown(f"###  📋  Parametre Girişi ve Eşleştirme ({senaryo_sayisi} Takım/Senaryo)")
 sekmeler = st.tabs([f"{i+1}. Senaryo" for i in range(senaryo_sayisi)])
@@ -280,26 +290,38 @@ for i, sekme in enumerate(sekmeler):
 
         with colA:
             st.markdown("**Malzeme ve Takım Ayarları**")
-            m_secim = genel_malzeme_secimi if ortak_malzeme else st.selectbox("Hammadde Seçimi", list(MALZEMELER.keys()), key=f"mat_{i}")
-            s_malzeme = MALZEMELER.get(m_secim)
+            m_secim = genel_malzeme_secimi if ortak_malzeme else st.selectbox("Hammadde Seçimi", list(MALZEMELER.keys()), key=f"mat_{i}", index=None, placeholder="Seçiniz...")
+            s_malzeme = MALZEMELER.get(m_secim) if m_secim else None
             if not s_malzeme: eksik_alanlar.append(f"{isim}: Hammadde")
 
-            t_cap = genel_t_cap if ortak_takim else st.number_input("Takım Çapı (D)", min_value=1, key=f"tcap_{i}")
-            t_dis = genel_t_dis if ortak_takim else st.number_input("Diş Sayısı (z)", min_value=1, key=f"tdis_{i}")
-            t_boy = genel_t_boy if ortak_takim else st.number_input("Kesme Boyu (Lc)", min_value=1, key=f"tboy_{i}")
+            t_cap = genel_t_cap if ortak_takim else st.number_input("Takım Çapı (D) [mm]", min_value=1, key=f"tcap_{i}", value=None, placeholder="Örn: 6")
+            t_dis = genel_t_dis if ortak_takim else st.number_input("Diş Sayısı (z)", min_value=1, key=f"tdis_{i}", value=None, placeholder="Örn: 4")
+            t_boy = genel_t_boy if ortak_takim else st.number_input("Kesme Boyu (Lc) [mm]", min_value=1, key=f"tboy_{i}", value=None, placeholder="Örn: 24")
             if t_cap is None: eksik_alanlar.append(f"{isim}: Takım Çapı")
+            if t_dis is None: eksik_alanlar.append(f"{isim}: Diş Sayısı")
+            if t_boy is None: eksik_alanlar.append(f"{isim}: Kesme Boyu")
 
         with colB:
             st.markdown("**Kesme Parametreleri**")
-            vc = st.number_input("Kesme Hızı (Vc) [m/min]", min_value=1, key=f"vc_{i}")
-            fz = st.number_input("İlerleme (fz) [mm/diş]", format="%g", key=f"fz_{i}")
-            ap = st.number_input("Eksenel Derinlik (ap)", format="%g", key=f"ap_{i}")
-            ae = st.number_input("Radyal Derinlik (ae)", format="%g", key=f"ae_{i}")
-            cam_dk = st.number_input("Dakika", min_value=0, key=f"cam_dk_{i}")
-            cam_sn = st.number_input("Saniye", min_value=0, max_value=59, key=f"cam_sn_{i}")
-            cam_sure = cam_dk + (cam_sn if cam_sn else 0) / 60.0 if cam_dk is not None else None
+            vc = st.number_input("Kesme Hızı (Vc) [m/min]", min_value=1, key=f"vc_{i}", value=None, placeholder="Örn: 400")
+            fz = st.number_input("İlerleme (fz) [mm/diş]", format="%g", key=f"fz_{i}", value=None, placeholder="Örn: 0.08")
+            ap = st.number_input("Eksenel Derinlik (ap) [mm]", format="%g", key=f"ap_{i}", value=None, placeholder="Örn: 5")
+            ae = st.number_input("Radyal Derinlik (ae) [mm]", format="%g", key=f"ae_{i}", value=None, placeholder="Örn: 5")
             
             if vc is None: eksik_alanlar.append(f"{isim}: Kesme Hızı")
+            if fz is None: eksik_alanlar.append(f"{isim}: İlerleme")
+            if ap is None: eksik_alanlar.append(f"{isim}: Eksenel Derinlik")
+            if ae is None: eksik_alanlar.append(f"{isim}: Radyal Derinlik")
+
+            # --- DAKİKA VE SANİYE ALANI YAN YANA ALINDI ---
+            t_col1, t_col2 = st.columns(2)
+            with t_col1:
+                cam_dk = st.number_input("Dakika", min_value=0, key=f"cam_dk_{i}", value=None, placeholder="Örn: 2")
+                if cam_dk is None: eksik_alanlar.append(f"{isim}: İşleme Süresi")
+            with t_col2:
+                cam_sn = st.number_input("Saniye", min_value=0, max_value=59, key=f"cam_sn_{i}", value=None, placeholder="Örn: 15")
+            
+            cam_sure = cam_dk + (cam_sn if cam_sn else 0) / 60.0 if cam_dk is not None else None
 
             # --- OTONOM vs MANUEL CMM SEÇİMİ ---
             secilen_olcum = None
@@ -308,35 +330,34 @@ for i, sekme in enumerate(sekmeler):
             if veri_giris_modu == "CMM Dosyası Yükle (Otonom)":
                 if not df_ana.empty and 'Olcum_Adi' in df_ana.columns:
                     olcumler = df_ana['Olcum_Adi'].unique()
-                    secilen_olcum = st.selectbox("📏 Analiz Edilecek Geometri (Dosyadan)", olcumler, key=f"geo_{i}")
+                    secilen_olcum = st.selectbox("📏 Analiz Edilecek Geometri", olcumler, key=f"geo_{i}", index=None, placeholder="Geometri Seçin...")
+                    if not secilen_olcum: eksik_alanlar.append(f"{isim}: Analiz Edilecek Geometri")
                     aykiri_filtre = st.checkbox("Aykırı (Hatalı) Ölçümleri Filtrele", value=True, key=f"outlier_{i}")
                 else:
                     st.warning("Geçerli bir CMM dosyası yüklenmedi.")
                     eksik_alanlar.append(f"{isim}: CMM Dosyası")
             else:
-                cmm_str = st.text_input(f"CMM Verileri ({birim_ad}, Boşluklu)", key=f"cmm_{i}")
+                cmm_str = st.text_input(f"CMM Verileri ({birim_ad}, Boşluklu)", key=f"cmm_{i}", placeholder=cmm_ornek)
                 if not cmm_str: eksik_alanlar.append(f"{isim}: CMM Verileri")
 
         with colC:
             st.markdown("** 🧠 CMM Sağlık Kontrolü & Motor**")
             if s_malzeme: st.info(f"**Kc:** {s_malzeme['kc']} MPa | **Taylor:** {s_malzeme['c_taylor']:.1e}")
+            else: st.warning("Malzeme seçimi bekleniyor...")
             
             # --- SAĞLIK KONTROLÜ VE CPK HESAPLAMASI ---
             if veri_giris_modu == "CMM Dosyası Yükle (Otonom)" and secilen_olcum:
                 df_sub = df_ana[df_ana['Olcum_Adi'] == secilen_olcum]
-                if not df_sub.empty and 'Olculen_Deger' in df_sub.columns:
+                if not df_sub.empty and 'Olculen_Deger' in df_sub.columns and 'Nominal' in df_sub.columns and 'Ust_Tolerans' in df_sub.columns and 'Alt_Tolerans' in df_sub.columns:
                     mean_val = df_sub['Olculen_Deger'].mean()
                     std_val = df_sub['Olculen_Deger'].std()
                     nom = df_sub['Nominal'].iloc[0]
                     usl = nom + df_sub['Ust_Tolerans'].iloc[0]
                     lsl = nom - df_sub['Alt_Tolerans'].iloc[0]
                     
-                    # Cpk Hesaplama
-                    if pd.notna(std_val) and std_val > 0:
-                        cpk = min((usl - mean_val) / (3 * std_val), (mean_val - lsl) / (3 * std_val))
+                    if pd.notna(std_val) and std_val > 0: cpk = min((usl - mean_val) / (3 * std_val), (mean_val - lsl) / (3 * std_val))
                     else: cpk = 0.0
                     
-                    # Tolerans içi yüzde
                     in_spec = df_sub[(df_sub['Olculen_Deger'] <= usl) & (df_sub['Olculen_Deger'] >= lsl)]
                     in_spec_pct = len(in_spec) / len(df_sub) * 100
                     
@@ -347,8 +368,16 @@ for i, sekme in enumerate(sekmeler):
                     Proses Yeterliliği (Cpk): <b>{cpk:.2f}</b>
                     </div>
                     """, unsafe_allow_html=True)
+            
+            # --- ARKA PLAN AÇIKLAMA KUTUSU GERİ EKLENDİ ---
+            st.markdown("""
+            <div style='background-color:rgba(248, 249, 250, 0.05); padding:10px; border-radius:5px; font-size:12px; border-left: 3px solid #004B87; box-shadow: 1px 1px 3px rgba(0,0,0,0.1); margin-top: 10px;'>
+            <b>Arka Plan Matematiği:</b><br>
+            Sistem, girilen CAM verilerini kullanarak anlık talaş kalınlığını hesaplar. Elde edilen efektif kesme kuvveti, Taylor Takım Ömrü denklemi ile entegre edilerek teorik kırılma ufku belirlenir.
+            Regresyon modeli, CMM sapmalarını bu fiziksel ufukla kıyaslar.
+            </div>
+            """, unsafe_allow_html=True)
 
-        # Veri setini oluşturup arka plana aktarma listesine ekliyoruz
         senaryo_verileri.append({
             "isim": isim, "mat_isim": m_secim, "mat_data": s_malzeme,
             "t_cap": t_cap, "t_dis": t_dis, "t_boy": t_boy,
@@ -369,16 +398,12 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
         try:
             system = AI_ToolLife(tolerance=tol_siniri, birim_ad=birim_ad)
             for d in senaryo_verileri:
-                
-                # Otonom mu Manuel mi kontrolü
                 if veri_giris_modu == "Manuel Veri Girişi (Klasik)":
                     cmm_vals = [float(x.replace(',', '.')) for x in d["cmm_str"].split()]
                     blocks = list(range(1, len(cmm_vals) + 1))
                 else:
-                    # Pandas içinden o boyuta ait verileri çekiyoruz
                     df_sub = df_ana[df_ana['Olcum_Adi'] == d["secilen_olcum"]].copy()
                     
-                    # Aykırı Değer Filtresi
                     if d["aykiri_filtre"]:
                         mean_val = df_sub['Olculen_Deger'].mean()
                         std_val = df_sub['Olculen_Deger'].std()
@@ -386,7 +411,6 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
                             z_scores = np.abs((df_sub['Olculen_Deger'] - mean_val) / std_val)
                             df_sub = df_sub[z_scores < 3]
                             
-                    # Mutlak sapma (aşınma) hesabı: Abs(Ölçülen - Nominal)
                     cmm_vals = np.abs(df_sub['Olculen_Deger'] - df_sub['Nominal']).tolist()
                     blocks = df_sub['Parca_Sira'].tolist() if 'Parca_Sira' in df_sub.columns else list(range(1, len(cmm_vals) + 1))
 
