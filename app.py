@@ -142,11 +142,10 @@ class AI_ToolLife:
             'D': D, 'z': z, 'Lc': Lc, 'Vc': Vc, 'fz': fz, 'ap': ap, 'ae': ae 
         }
 
-    # --- YENİ MİMARİ: TEKİL GRAFİK ÇİZDİRME ---
     def plot_single_scenario(self, name):
         data = self.scenarios[name]
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
-        col = '#004B87' # Standart AGU/LIFT-UP mavisi
+        col = '#004B87' 
         
         ax1.scatter(data['b_raw'], data['y_raw'], color=col, s=100, zorder=3, edgecolor='white', linewidth=1)
         ax1.plot(data['b_fut'], data['y_fut'], color=col, linestyle='--', linewidth=3, label=f"{name}", zorder=2)
@@ -211,13 +210,16 @@ df_ana = pd.DataFrame()
 if veri_giris_modu == "CMM Dosyası Yükle (Otonom)":
     st.info("💡 **Otonom Mod:** CMM cihazınızdan aldığınız çoklu parçalara ait raporları (.xlsx veya .csv) doğrudan sisteme sürükleyin.")
     
-    # --- MÜKEMMEL EXCEL ŞABLONU OLUŞTURMA ---
+    # --- YENİLENMİŞ VE GRAFİK ÇİZEBİLEN CMM ŞABLONU ---
     df_sablon = pd.DataFrame({
-        "Name": ["1_Ø14.5mm", "2_Ø14.5mm_Position", "3_Ø8mm", "11_M10_Position"],
-        "Measured value": [14.5268, 0.0183, 7.9856, 0.0784],
-        "Nominal value": [14.5000, 0.0000, 8.0000, 0.0000],
-        "+Tol": [0.1000, 0.1232, 0.0000, 0.1000],
-        "-Tol": [-0.1000, 0.0000, -0.1000, 0.0000]
+        "Parça No": [1, 2, 3, 1, 2, 3],
+        "Name": ["1_Ø14.5mm", "1_Ø14.5mm", "1_Ø14.5mm", "11_M10_Position", "11_M10_Position", "11_M10_Position"],
+        "Measured value": ["14.5120 mm", "14.5450 mm", "14.5880 mm", "0.0210 mm", "0.0450 mm", "0.0784 mm"],
+        "Nominal value": [14.5000, 14.5000, 14.5000, 0.0000, 0.0000, 0.0000],
+        "+Tol": [0.1000, 0.1000, 0.1000, 0.1000, 0.1000, 0.1000],
+        "-Tol": [-0.1000, -0.1000, -0.1000, 0.0000, 0.0000, 0.0000],
+        "Deviation": [0.0120, 0.0450, 0.0880, 0.0210, 0.0450, 0.0784],
+        "+/-": ["", "", "---||", "", "", "---||"]
     })
     excel_sablon_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_sablon_buffer, engine='openpyxl') as writer:
@@ -234,18 +236,17 @@ if veri_giris_modu == "CMM Dosyası Yükle (Otonom)":
                 if dosya.name.endswith('.csv'): df_temp = pd.read_csv(dosya, sep=None, engine='python', decimal='.')
                 else: df_temp = pd.read_excel(dosya)
                 
-                # --- AKILLI SÜTUN EŞLEŞTİRİCİ ---
                 sutun_haritasi = {
                     'Name': 'Olcum_Adi', 'Dimension': 'Olcum_Adi', 'Olcum_Adi': 'Olcum_Adi',
                     'Measured value': 'Olculen_Deger', 'Measurement': 'Olculen_Deger', 'Olculen_Deger': 'Olculen_Deger',
                     'Nominal value': 'Nominal', 'Nominal': 'Nominal',
                     '+Tol': 'Ust_Tolerans', 'Upper_Tolerance': 'Ust_Tolerans', 'Ust_Tolerans': 'Ust_Tolerans',
-                    '-Tol': 'Alt_Tolerans', 'Lower_Tolerance': 'Alt_Tolerans', 'Alt_Tolerans': 'Alt_Tolerans'
+                    '-Tol': 'Alt_Tolerans', 'Lower_Tolerance': 'Alt_Tolerans', 'Alt_Tolerans': 'Alt_Tolerans',
+                    'Deviation': 'Sapma', 'Parça No': 'Parca_Sira'
                 }
                 df_temp.rename(columns=sutun_haritasi, inplace=True)
                 
-                # --- 'mm' METNİNİ VE VİRGÜLÜ SİLEN AKILLI TEMİZLEYİCİ ---
-                for col_name in ['Olculen_Deger', 'Nominal', 'Ust_Tolerans', 'Alt_Tolerans']:
+                for col_name in ['Olculen_Deger', 'Nominal', 'Ust_Tolerans', 'Alt_Tolerans', 'Sapma']:
                     if col_name in df_temp.columns and df_temp[col_name].dtype == object:
                         df_temp[col_name] = df_temp[col_name].astype(str).str.replace(r'[^\d.,-]', '', regex=True).str.replace(',', '.').astype(float)
                     
@@ -346,7 +347,6 @@ for i, sekme in enumerate(sekmeler):
                     </div>
                     """, unsafe_allow_html=True)
             
-            # --- GÜNCELLENMİŞ ARKA PLAN AÇIKLAMASI ---
             st.markdown("""
             <div style='background-color:rgba(248, 249, 250, 0.05); padding:10px; border-radius:5px; font-size:12px; border-left: 3px solid #004B87; box-shadow: 1px 1px 3px rgba(0,0,0,0.1); margin-top: 10px;'>
             <b>Takım ve Parça Eşleştirme Matematiği:</b><br>
@@ -399,7 +399,6 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
             st.error(f"Sayısal format veya dosya işleme hatası: {e}.")
             st.session_state.analiz_yapildi = False
 
-# --- YENİ DÜZEN: HER TAKIMA AYRI SEKMELİ GRAFİK ---
 if st.session_state.analiz_yapildi and st.session_state.sistem_verisi is not None:
     system = st.session_state.sistem_verisi
     
@@ -409,12 +408,10 @@ if st.session_state.analiz_yapildi and st.session_state.sistem_verisi is not Non
     
     for idx, (isim, veri) in enumerate(system.scenarios.items()):
         with sonuc_sekmeleri[idx]:
-            # Grafiği sekmenin içine çizdir
             fig = system.plot_single_scenario(isim)
             st.pyplot(fig)
-            cizilen_grafikler[isim] = fig # İndirme için arşive al
+            cizilen_grafikler[isim] = fig 
             
-            # Grafiğin altına o takımın metriklerini koy
             col1, col2, col3 = st.columns(3)
             col1.metric("Teorik Takım Ömrü", f"{veri['t_theo']:.1f} Dakika")
             col2.metric("Tahmini Kırılma Ufku (Blok)", veri['guven_araligi_metni'])
@@ -483,7 +480,6 @@ if st.session_state.analiz_yapildi and st.session_state.sistem_verisi is not Non
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         zip_file.writestr(excel_isim, excel_buffer.getvalue())
-        # Tüm grafikleri ayrı PNG olarak ZIP'e ekliyoruz
         for g_isim, f in cizilen_grafikler.items():
             img_buffer = io.BytesIO()
             f.savefig(img_buffer, format="png", bbox_inches="tight", dpi=300) 
