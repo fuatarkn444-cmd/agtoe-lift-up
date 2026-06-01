@@ -9,6 +9,7 @@ import os
 import io          
 import zipfile     
 
+
 st.set_page_config(page_title="LIFT-UP Kestirimci Bakım", page_icon=" ✈️ ", layout="wide")
 
 if 'ilk_giris' not in st.session_state:
