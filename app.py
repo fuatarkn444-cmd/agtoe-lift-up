@@ -13,6 +13,16 @@ import re
 
 st.set_page_config(page_title="LIFT-UP Kestirimci Bakım", page_icon=" ✈️ ", layout="wide")
 
+# --- SABİT TANIMLAMALAR (NameError Hatasını Önlemek İçin En Üste Alındı) ---
+MALZEMELER = {
+    "Alüminyum 6061-T6": {"kc": 800, "c_taylor": 4.5e10}, 
+    "Alüminyum 7075-T6": {"kc": 975, "c_taylor": 3.5e10},
+    "Titanyum Ti-6Al-4V": {"kc": 2100, "c_taylor": 1.2e10}, 
+    "Paslanmaz Çelik 304": {"kc": 2100, "c_taylor": 2.8e10},
+    "17-4 PH Paslanmaz": {"kc": 2600, "c_taylor": 2.0e10}, 
+    "AISI 4340 Alaşımlı Çelik": {"kc": 2700, "c_taylor": 1.8e10}
+}
+
 # --- KALICI HAFIZA (SESSION STATE) TANIMLAMALARI ---
 if 'ilk_giris' not in st.session_state:
     st.session_state.ilk_giris = True
@@ -54,6 +64,7 @@ div.stButton > button:first-child:hover { background: linear-gradient(90deg, #E3
 
 st.markdown("<div style='text-align: left; background-color: #E31837; color: white; display: inline-block; padding: 3px 12px; font-family: monospace; font-weight: bold; border-radius: 4px; font-size: 13px; box-shadow: 2px 2px 4px rgba(0,0,0,0.3);'>by Fuat Arıkan</div>", unsafe_allow_html=True)
 
+# --- HEADER PANEL ---
 col_baslik, col_logo = st.columns([5, 1])
 with col_baslik:
     st.markdown("<h2 style='text-align: center; margin-bottom: 0;'> 🛠️  LIFT-UP: Kestirimci Bakım Dashboard</h2>", unsafe_allow_html=True)
@@ -64,7 +75,7 @@ with col_logo:
     if os.path.exists("agtoe.png"): st.image("agtoe.png", width=150)
     elif os.path.exists("logo.jpg"): st.image("logo.jpg", width=150)
 
-# --- EKİP ARKADAŞININ YAZDIĞI AKILLI VERİ DÜZELTME MOTORU (yapay_zeka_motoru.py'den Alındı) ---
+# --- AKILLI VERİ DÜZELTME MOTORU (Kümülatif Aşınma Filtresi) ---
 def veriyi_duzelt_rolling_max(wear_verileri):
     """CMM ölçümlerindeki zikzakları ve prob hatalarını ayıklayıp kümülatif aşınma trendi üretir."""
     if not wear_verileri:
@@ -211,14 +222,14 @@ class AI_ToolLife:
             'D': D, 'z': z, 'Lc': Lc, 'Vc': Vc, 'fz': fz, 'ap': ap, 'ae': ae 
         }
 
-    # --- TAMİRLİ ENDÜSTRİYEL COĞRAFİ GRAFİK TASARIMI (Görseliniz ile %100 Uyumlu) ---
+    # --- TAMİRLİ ENDÜSTRİYEL COĞRAFİ GRAFİK TASARIMI ---
     def plot_single_scenario(self, name):
         data = self.scenarios[name]
         fig, ax = plt.subplots(figsize=(10, 5))
         
         uyari_siniri = self.tolerance * 0.75
         
-        # Sektörel Renk Şeritleri (Masaüstündeki Gibi Jilet Düzen)
+        # Sektörel Renk Şeritleri
         ax.axhspan(0, uyari_siniri, facecolor='#d4edda', alpha=0.6, label='Güvenli İşleme Alanı (Yeşil)')
         ax.axhspan(uyari_siniri, self.tolerance, facecolor='#fff3cd', alpha=0.7, label='Erken Uyarı Alanı (Sarı)')
         ax.axhspan(self.tolerance, self.tolerance * 1.5, facecolor='#f8d7da', alpha=0.6, label='Boyutsal Risk Alanı (Kırmızı)')
@@ -229,7 +240,7 @@ class AI_ToolLife:
 
         # Gerçekleşen Noktalar ve Gelişmiş Regresyon Eğrisi
         ax.plot(data['b_fut'], data['y_fut'], color='#004B87', linestyle='-', linewidth=3.5, zorder=4, label=f"Aşınma Tahmin Eğrisi")
-        ax.scatter(data['b_raw'], data['y_raw'], color='#E31837', s=140,办事zorder=5, edgecolor='white', linewidth=1.5, label='Kümülatif CMM Sapma Noktaları')
+        ax.scatter(data['b_raw'], data['y_raw'], color='#E31837', s=140, zorder=5, edgecolor='white', linewidth=1.5, label='Kümülatif CMM Sapma Noktaları')
         
         ax.set_title(f"Kestirimci Aşınma Dashboard Analizi: {name.upper()}", fontsize=12, fontweight='bold', pad=15)
         ax.set_xlabel("Ardışık İşlenen Parça Sırası (Adet / Çevrim)", fontsize=10, fontweight='bold')
@@ -243,6 +254,7 @@ class AI_ToolLife:
         fig.tight_layout()
         return fig 
 
+# --- YAN MENÜ (SİDEBAR) ---
 with st.sidebar:
     st.header(" ⚙️  Veri Giriş Sihirbazı")
     veri_giris_modu = st.radio("Sistemi Nasıl Kullanacaksınız?", ["CMM Dosyası Yükle (PDF/Otonom)", "Manuel Veri Girişi (Klasik)"])
@@ -311,9 +323,11 @@ if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)":
             if 'Olcum_Adi' in df_ana.columns: 
                 df_ana = df_ana.sort_values(by=['Olcum_Adi', 'Parca_Sira'])
 
+# --- PARAMETRE GİRİŞİ VE EŞLEŞTİRME ---
 st.markdown(f"###  📋  Kesici Takım & İşlediği Kritik Bölge Eşleştirmeleri ({senaryo_sayisi} Takım)")
 sekmeler = st.tabs([f"{i+1}. Kesici Takım" for i in range(senaryo_sayisi)])
 senaryo_verileri = []
+eksik_alanlar = []
 
 for i, sekme in enumerate(sekmeler):
     with sekme:
@@ -404,7 +418,6 @@ if st.button(" 🚀  Takım Ömrü Kestirim Analizini Başlat", use_container_wi
             for d in senaryo_verileri:
                 if veri_giris_modu == "Manuel Veri Girişi (Klasik)":
                     raw_vals = [float(x.replace(',', '.')) for x in d["cmm_str"].split()]
-                    # Kümülatif aşınma trendi filtresini manuel girişe de giydiriyoruz
                     cmm_vals = veriyi_duzelt_rolling_max(raw_vals)
                     blocks = list(range(1, len(cmm_vals) + 1))
                 else:
@@ -419,9 +432,8 @@ if st.button(" 🚀  Takım Ömrü Kestirim Analizini Başlat", use_container_wi
                             df_sub = df_sub[z_scores < 3]
                             
                     raw_vals = df_sub['Sapma'].tolist()
-                    # --- EKİP ARKADAŞININ ROLLING_MAX FİLTRESİ ENTEGRASYONU ---
                     cmm_vals = veriyi_duzelt_rolling_max(raw_vals)
-                    blocks = list(range(1, len(cmm_vals) + 1))
+                    blocks = df_sub['Parca_Sira'].tolist() if 'Parca_Sira' in df_sub.columns else list(range(1, len(cmm_vals) + 1))
 
                 system.add_scenario(d["isim"], d["mat_isim"], d["mat_data"]['kc'], d["mat_data"]['c_taylor'], d["t_cap"], d["t_dis"], d["t_boy"], d["vc"], d["fz"], d["ap"], d["ae"], blocks, cmm_vals, d["cam_sure"])
             
