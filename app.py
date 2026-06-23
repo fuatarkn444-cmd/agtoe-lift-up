@@ -7,11 +7,13 @@ from sklearn.preprocessing import PolynomialFeatures
 from sklearn.metrics import mean_squared_error
 import os
 import io          
-import zipfile     
-
+import zipfile   
+import pdfplumber
+import re
 
 st.set_page_config(page_title="LIFT-UP Kestirimci Bakım", page_icon=" ✈️ ", layout="wide")
 
+# --- KALICI HAFIZA (SESSION STATE) TANIMLAMALARI ---
 if 'ilk_giris' not in st.session_state:
     st.session_state.ilk_giris = True
 if 'analiz_yapildi' not in st.session_state:
@@ -25,7 +27,7 @@ def rehber_dialog():
     **Bu sistem, İstatistiksel Regresyon ve Taylor Denklemlerini harmanlayarak takım ömrünü kestirimci olarak tahmin eder.**
 
     ###  🛠️  Nasıl Kullanılır?
-    1. **Veri Giriş Yöntemi:** Sol menüden CMM dosya yükleme veya manuel giriş yöntemini seçin.
+    1. **Veri Giriş Yöntemi:** Sol menüden CMM dosya yükleme (PDF/Excel/CSV) veya manuel giriş yöntemini seçin.
     2. **Parametreler:** Kullanacağınız malzeme, takım ölçüleri ve CAM kesme verilerini eksiksiz doldurun.
     3. **Eşleştirme:** Yüklediğiniz dosyadaki ölçüm geometrilerini ilgili kesici takımlarla eşleştirin.
     4. **Analiz:** 'Tahmini Başlat' butonuna basın ve modelin hesapladığı aşınma tahminlerini inceleyin.
@@ -35,6 +37,7 @@ if st.session_state.ilk_giris:
     rehber_dialog()
     st.session_state.ilk_giris = False
 
+# --- CSS TEMA ---
 st.markdown("""
 <style>
 header[data-testid="stHeader"] { background: linear-gradient(90deg, #004B87, #E31837) !important; height: 4px !important; }
@@ -61,9 +64,54 @@ with col_logo:
     if os.path.exists("agtoe.png"): st.image("agtoe.png", width=150)
     elif os.path.exists("logo.jpg"): st.image("logo.jpg", width=150)
 
+# --- VERİ TEMİZLEME VE PDF OKUMA MOTORU ---
+def extract_pdf_data(file):
+    """PDF formatındaki Zeiss Calypso vb. CMM raporlarını DataFrame'e dönüştürür."""
+    data = []
+    try:
+        with pdfplumber.open(file) as pdf:
+            for page in pdf.pages:
+                tables = page.extract_tables()
+                for table in tables:
+                    for row in table:
+                        if len(row) >= 5 and "Name" not in str(row[0]):
+                            # Satırdaki \n karakterlerini ve mm yazılarını temizle
+                            temiz_satir = [str(cell).replace('\n', ' ').replace('mm', '').strip() if cell else "" for cell in row]
+                            
+                            # İsim, Nominal, Ölçülen ve Sapma değerlerini çıkarma
+                            olcum_adi = temiz_satir[0]
+                            sapma = temiz_satir[4] if len(temiz_satir) > 4 else "0"
+                            
+                            if olcum_adi and sapma:
+                                data.append({
+                                    "Olcum_Adi": olcum_adi,
+                                    "Sapma": sapma
+                                })
+    except Exception as e:
+        st.error(f"PDF okuma hatası: {e}")
+    return pd.DataFrame(data)
+
+def clean_cmm_data(df):
+    """Excel/CSV verilerindeki sütunları standartlaştırır ve metinleri temizler."""
+    sutun_haritasi = {
+        'Name': 'Olcum_Adi', 'Dimension': 'Olcum_Adi', 'Olcum_Adi': 'Olcum_Adi',
+        'Measured value': 'Olculen_Deger', 'Measurement': 'Olculen_Deger', 'Olculen_Deger': 'Olculen_Deger',
+        'Nominal value': 'Nominal', 'Nominal': 'Nominal',
+        '+Tol': 'Ust_Tolerans', 'Upper_Tolerance': 'Ust_Tolerans', 'Ust_Tolerans': 'Ust_Tolerans',
+        '-Tol': 'Alt_Tolerans', 'Lower_Tolerance': 'Alt_Tolerans', 'Alt_Tolerans': 'Alt_Tolerans',
+        'Deviation': 'Sapma', 'Parça No': 'Parca_Sira'
+    }
+    df.rename(columns=sutun_haritasi, inplace=True)
+    
+    for col_name in ['Olculen_Deger', 'Nominal', 'Ust_Tolerans', 'Alt_Tolerans', 'Sapma']:
+        if col_name in df.columns and df[col_name].dtype == object:
+            df[col_name] = df[col_name].astype(str).str.replace(r'[^\d.,-]', '', regex=True).str.replace(',', '.').astype(float)
+    return df
+
+# --- ANA MOTOR SINIFI ---
 class AI_ToolLife:
     def __init__(self, tolerance, birim_ad):
-        self.tolerance = tolerance
+        self.tolerance = float(tolerance)
         self.birim_ad = birim_ad
         self.scenarios = {}
 
@@ -143,37 +191,39 @@ class AI_ToolLife:
             'D': D, 'z': z, 'Lc': Lc, 'Vc': Vc, 'fz': fz, 'ap': ap, 'ae': ae 
         }
 
+    # --- UYGULAMA İLE BİREBİR AYNI ENDÜSTRİYEL GRAFİK TASARIMI ---
     def plot_single_scenario(self, name):
         data = self.scenarios[name]
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
-        col = '#004B87' 
+        fig, ax = plt.subplots(figsize=(10, 6))
         
-        ax1.scatter(data['b_raw'], data['y_raw'], color=col, s=100, zorder=3, edgecolor='white', linewidth=1)
-        ax1.plot(data['b_fut'], data['y_fut'], color=col, linestyle='--', linewidth=3, label=f"{name}", zorder=2)
-        guven_bandi = data['rmse_val'] * 2
-        ax1.fill_between(data['b_fut'], data['y_fut'] - guven_bandi, data['y_fut'] + guven_bandi, color=col, alpha=0.12)
+        # Arka Plan Bölgeleri (Güvenli, Uyarı, Riskli)
+        uyari_siniri = self.tolerance * 0.75
         
-        time_raw = [b * data['cam_cycle_time'] for b in data['b_raw']]
-        time_fut = [b * data['cam_cycle_time'] for b in data['b_fut']]
-        ax2.scatter(time_raw, data['y_raw'], color=col, s=100, zorder=3, edgecolor='white', linewidth=1)
-        ax2.plot(time_fut, data['y_fut'], color=col, linestyle='-', linewidth=3, label=f"{name}", zorder=2)
-        ax2.fill_between(time_fut, np.array(data['y_fut']) - guven_bandi, np.array(data['y_fut']) + guven_bandi, color=col, alpha=0.12)
-        
-        y_limit = self.tolerance * 1.5
-        for ax, title, xlabel in zip([ax1, ax2], ["Blok Sayısına Göre Takım Aşınması", "CAM Süresine Göre Takım Aşınması"], ["İşlenen Sütun / Blok Sayısı", "Aktif CAM İşleme Süresi (Dakika)"]):
-            ax.axhline(y=self.tolerance, color='#ff0000', linewidth=4, label=f"Tolerans ({self.tolerance} {self.birim_ad})", zorder=1)
-            ax.set_title(title, fontsize=14, fontweight='bold', pad=10)
-            ax.set_xlabel(xlabel, fontsize=10, fontweight='bold')
-            ax.set_ylabel(f"Boyutsal Sapma ({self.birim_ad})", fontsize=10, fontweight='bold')
-            ax.set_ylim(0.0, y_limit)
-            ax.legend(loc='upper left', fontsize=9)
-            ax.grid(True, linestyle=':', alpha=0.4, zorder=0)
+        ax.axhspan(0, uyari_siniri, facecolor='#d4edda', alpha=0.4, label='Güvenli Bölge (Yeşil)')
+        ax.axhspan(uyari_siniri, self.tolerance, facecolor='#fff3cd', alpha=0.5, label='Uyarı Bölgesi (Sarı)')
+        ax.axhspan(self.tolerance, self.tolerance * 1.5, facecolor='#f8d7da', alpha=0.5, label='Kritik Bölge (Kırmızı)')
 
+        # Sınır Çizgileri
+        ax.axhline(self.tolerance, color='#dc3545', linewidth=2, linestyle='--', label=f"Kritik Hata Sınırı ({self.tolerance} {self.birim_ad})")
+        ax.axhline(uyari_siniri, color='#ffc107', linewidth=2, linestyle='--', label=f"Uyarı Sınırı ({uyari_siniri} {self.birim_ad})")
+
+        # CMM Noktaları ve Kestirim Eğrisi
+        ax.scatter(data['b_raw'], data['y_raw'], color='#004B87', s=120, zorder=4, edgecolor='white', linewidth=1.5, label='Gerçekleşen CMM Ölçümleri')
+        ax.plot(data['b_fut'], data['y_fut'], color='#17a2b8', linestyle='-', linewidth=3, zorder=3, label=f"Kestirim Eğrisi (Model)")
+        
+        # Eksen ve Etiket Ayarları
+        ax.set_title(f"Takım Aşınma Kestirim Grafiği: {name.upper()}", fontsize=14, fontweight='bold', pad=15)
+        ax.set_xlabel("İşlenen Parça (Adet) / Blok", fontsize=11, fontweight='bold')
+        ax.set_ylabel(f"Aşınma (Boyutsal Sapma) [{self.birim_ad}]", fontsize=11, fontweight='bold')
+        ax.set_ylim(0.0, self.tolerance * 1.5)
+        
         max_blok = data['b_fut'][-1]
-        max_time = max_blok * data['cam_cycle_time']
-        ax1.set_xlim(0, max_blok)
-        ax2.set_xlim(0, max_time)
-        fig.tight_layout(pad=2.0)
+        ax.set_xlim(0, max_blok)
+        
+        ax.legend(loc='upper left', fontsize=9, framealpha=0.9)
+        ax.grid(True, linestyle=':', alpha=0.6, zorder=0)
+
+        fig.tight_layout()
         return fig 
 
 MALZEMELER = {
@@ -184,7 +234,7 @@ MALZEMELER = {
 
 with st.sidebar:
     st.header(" ⚙️  Veri Giriş Sihirbazı")
-    veri_giris_modu = st.radio("Sistemi Nasıl Kullanacaksınız?", ["CMM Dosyası Yükle (Otonom)", "Manuel Veri Girişi (Klasik)"])
+    veri_giris_modu = st.radio("Sistemi Nasıl Kullanacaksınız?", ["CMM Dosyası Yükle (PDF/Otonom)", "Manuel Veri Girişi (Klasik)"])
     
     st.markdown("---")
     st.header(" 📏  Genel Ayarlar")
@@ -196,7 +246,7 @@ with st.sidebar:
     cmm_ornek = "Örn: 0.2 0.5 0.8 1.2" if is_mikron else "Örn: 0.0002 0.0005 0.0008 0.0012"
 
     tol_siniri = st.number_input(f"Maksimum Tolerans ({birim_ad})", value=None, format="%g", placeholder=tol_ornek)
-    senaryo_sayisi = st.number_input("Karşılaştırılacak Takım/Senaryo Sayısı", min_value=1, max_value=5, value=1, step=1)
+    senaryo_sayisi = st.number_input("Karşılaştırılacak Takım Sayısı", min_value=1, max_value=5, value=1, step=1)
     
     st.markdown("---")
     ortak_malzeme = st.checkbox("Tüm senaryolarda ortak MALZEME kullan", value=True)
@@ -208,10 +258,9 @@ with st.sidebar:
     genel_t_boy = st.number_input("Ortak Takım Kesme Boyu (Lc) [mm]", value=None, min_value=1, placeholder="Örn: 24") if ortak_takim else None
 
 df_ana = pd.DataFrame()
-if veri_giris_modu == "CMM Dosyası Yükle (Otonom)":
-    st.info("💡 **Otonom Mod:** CMM cihazınızdan aldığınız çoklu parçalara ait raporları (.xlsx veya .csv) doğrudan sisteme sürükleyin.")
+if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)":
+    st.info("💡 **Otonom Mod:** CMM cihazınızdan aldığınız raporları (PDF, Excel veya CSV) doğrudan sisteme sürükleyin.")
     
-    # --- YENİLENMİŞ VE GRAFİK ÇİZEBİLEN CMM ŞABLONU ---
     df_sablon = pd.DataFrame({
         "Parça No": [1, 2, 3, 1, 2, 3],
         "Name": ["1_Ø14.5mm", "1_Ø14.5mm", "1_Ø14.5mm", "11_M10_Position", "11_M10_Position", "11_M10_Position"],
@@ -219,41 +268,41 @@ if veri_giris_modu == "CMM Dosyası Yükle (Otonom)":
         "Nominal value": [14.5000, 14.5000, 14.5000, 0.0000, 0.0000, 0.0000],
         "+Tol": [0.1000, 0.1000, 0.1000, 0.1000, 0.1000, 0.1000],
         "-Tol": [-0.1000, -0.1000, -0.1000, 0.0000, 0.0000, 0.0000],
-        "Deviation": [0.0120, 0.0450, 0.0880, 0.0210, 0.0450, 0.0784],
-        "+/-": ["", "", "---||", "", "", "---||"]
+        "Deviation": [0.0120, 0.0450, 0.0880, 0.0210, 0.0450, 0.0784]
     })
     excel_sablon_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_sablon_buffer, engine='openpyxl') as writer:
         df_sablon.to_excel(writer, index=False, sheet_name='CMM_Data')
     
-    st.download_button("📄 Örnek CMM Şablonunu İndir (.xlsx)", data=excel_sablon_buffer.getvalue(), file_name="TOMTAS_Ornek_CMM.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("📄 Örnek Excel Şablonunu İndir", data=excel_sablon_buffer.getvalue(), file_name="TOMTAS_Ornek_CMM.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    yuklenen_dosyalar = st.file_uploader("CMM Verilerini Yükleyin (Tek veya Çoklu Dosya)", type=['csv', 'xlsx'], accept_multiple_files=True)
+    # YENİ: PDF Desteği eklendi
+    yuklenen_dosyalar = st.file_uploader("CMM Raporlarını Yükleyin (PDF, Excel, CSV)", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
     
     if yuklenen_dosyalar:
         veri_listesi = []
+        parca_sayaci = 1
         for dosya in yuklenen_dosyalar:
             try:
-                if dosya.name.endswith('.csv'): df_temp = pd.read_csv(dosya, sep=None, engine='python', decimal='.')
-                else: df_temp = pd.read_excel(dosya)
+                if dosya.name.lower().endswith('.pdf'):
+                    # PDF Plumber ile okuma (Masaüstü uygulamasından uyarlandı)
+                    df_temp = extract_pdf_data(dosya)
+                    df_temp['Parca_Sira'] = parca_sayaci
+                elif dosya.name.lower().endswith('.csv'):
+                    df_temp = pd.read_csv(dosya, sep=None, engine='python', decimal='.')
+                    df_temp = clean_cmm_data(df_temp)
+                else:
+                    df_temp = pd.read_excel(dosya)
+                    df_temp = clean_cmm_data(df_temp)
                 
-                sutun_haritasi = {
-                    'Name': 'Olcum_Adi', 'Dimension': 'Olcum_Adi', 'Olcum_Adi': 'Olcum_Adi',
-                    'Measured value': 'Olculen_Deger', 'Measurement': 'Olculen_Deger', 'Olculen_Deger': 'Olculen_Deger',
-                    'Nominal value': 'Nominal', 'Nominal': 'Nominal',
-                    '+Tol': 'Ust_Tolerans', 'Upper_Tolerance': 'Ust_Tolerans', 'Ust_Tolerans': 'Ust_Tolerans',
-                    '-Tol': 'Alt_Tolerans', 'Lower_Tolerance': 'Alt_Tolerans', 'Alt_Tolerans': 'Alt_Tolerans',
-                    'Deviation': 'Sapma', 'Parça No': 'Parca_Sira'
-                }
-                df_temp.rename(columns=sutun_haritasi, inplace=True)
-                
-                for col_name in ['Olculen_Deger', 'Nominal', 'Ust_Tolerans', 'Alt_Tolerans', 'Sapma']:
-                    if col_name in df_temp.columns and df_temp[col_name].dtype == object:
-                        df_temp[col_name] = df_temp[col_name].astype(str).str.replace(r'[^\d.,-]', '', regex=True).str.replace(',', '.').astype(float)
+                # Eğer Parca_Sira dosyadan gelmemişse otomatik ata
+                if 'Parca_Sira' not in df_temp.columns:
+                    df_temp['Parca_Sira'] = parca_sayaci
                     
                 veri_listesi.append(df_temp)
+                parca_sayaci += 1
             except Exception as e:
-                st.error(f"Dosya formatı okunamadı ({dosya.name}): Excel veya CSV olduğundan emin olun.")
+                st.error(f"Dosya okuma hatası ({dosya.name}): {e}")
                 
         if veri_listesi:
             df_ana = pd.concat(veri_listesi, ignore_index=True)
@@ -307,7 +356,7 @@ for i, sekme in enumerate(sekmeler):
             secilen_olcum = None
             aykiri_filtre = False
             cmm_str = ""
-            if veri_giris_modu == "CMM Dosyası Yükle (Otonom)":
+            if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)":
                 if not df_ana.empty and 'Olcum_Adi' in df_ana.columns:
                     olcumler = df_ana['Olcum_Adi'].unique()
                     secilen_olcum = st.selectbox("📏 Geometri / Takım Eşleştirme", olcumler, key=f"geo_{i}", index=None, placeholder="İşlenen Parçayı Seçin...")
@@ -325,8 +374,10 @@ for i, sekme in enumerate(sekmeler):
             if s_malzeme: st.info(f"**Kc:** {s_malzeme['kc']} MPa | **Taylor:** {s_malzeme['c_taylor']:.1e}")
             else: st.warning("Malzeme seçimi bekleniyor...")
             
-            if veri_giris_modu == "CMM Dosyası Yükle (Otonom)" and secilen_olcum:
+            if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)" and secilen_olcum:
                 df_sub = df_ana[df_ana['Olcum_Adi'] == secilen_olcum]
+                
+                # Cpk sadece toleranslar varsa hesaplanır
                 if not df_sub.empty and 'Olculen_Deger' in df_sub.columns and 'Nominal' in df_sub.columns and 'Ust_Tolerans' in df_sub.columns and 'Alt_Tolerans' in df_sub.columns:
                     mean_val = df_sub['Olculen_Deger'].mean()
                     std_val = df_sub['Olculen_Deger'].std()
@@ -347,7 +398,9 @@ for i, sekme in enumerate(sekmeler):
                     Proses Yeterliliği (Cpk): <b>{cpk:.2f}</b>
                     </div>
                     """, unsafe_allow_html=True)
-            
+                elif not df_sub.empty and 'Sapma' in df_sub.columns:
+                    st.success(f"✅ {secilen_olcum} için {len(df_sub)} adet sapma verisi bulundu.")
+
             st.markdown("""
             <div style='background-color:rgba(248, 249, 250, 0.05); padding:10px; border-radius:5px; font-size:12px; border-left: 3px solid #004B87; box-shadow: 1px 1px 3px rgba(0,0,0,0.1); margin-top: 10px;'>
             <b>Takım ve Parça Eşleştirme Matematiği:</b><br>
@@ -381,14 +434,21 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
                 else:
                     df_sub = df_ana[df_ana['Olcum_Adi'] == d["secilen_olcum"]].copy()
                     
+                    # Eğer sapma sütunu yoksa Ölçülen ve Nominal'den hesapla, varsa direkt kullan
+                    if 'Sapma' not in df_sub.columns and 'Olculen_Deger' in df_sub.columns and 'Nominal' in df_sub.columns:
+                        df_sub['Sapma'] = np.abs(df_sub['Olculen_Deger'] - df_sub['Nominal'])
+                    
+                    # Sapma verisini sayısal formata zorla
+                    df_sub['Sapma'] = pd.to_numeric(df_sub['Sapma'].astype(str).str.replace(r'[^\d.,-]', '', regex=True).str.replace(',', '.'), errors='coerce').fillna(0).abs()
+                    
                     if d["aykiri_filtre"]:
-                        mean_val = df_sub['Olculen_Deger'].mean()
-                        std_val = df_sub['Olculen_Deger'].std()
+                        mean_val = df_sub['Sapma'].mean()
+                        std_val = df_sub['Sapma'].std()
                         if std_val > 0:
-                            z_scores = np.abs((df_sub['Olculen_Deger'] - mean_val) / std_val)
+                            z_scores = np.abs((df_sub['Sapma'] - mean_val) / std_val)
                             df_sub = df_sub[z_scores < 3]
                             
-                    cmm_vals = np.abs(df_sub['Olculen_Deger'] - df_sub['Nominal']).tolist()
+                    cmm_vals = df_sub['Sapma'].tolist()
                     blocks = df_sub['Parca_Sira'].tolist() if 'Parca_Sira' in df_sub.columns else list(range(1, len(cmm_vals) + 1))
 
                 system.add_scenario(d["isim"], d["mat_isim"], d["mat_data"]['kc'], d["mat_data"]['c_taylor'], d["t_cap"], d["t_dis"], d["t_boy"], d["vc"], d["fz"], d["ap"], d["ae"], blocks, cmm_vals, d["cam_sure"])
@@ -397,7 +457,7 @@ if st.button(" 🚀  Takım Ömrü Tahminini Başlat", use_container_width=True,
             st.session_state.analiz_yapildi = True
 
         except Exception as e:
-            st.error(f"Sayısal format veya dosya işleme hatası: {e}.")
+            st.error(f"Sayısal format veya veri işleme hatası: Lütfen yeterli veri olduğundan emin olun. ({e})")
             st.session_state.analiz_yapildi = False
 
 if st.session_state.analiz_yapildi and st.session_state.sistem_verisi is not None:
