@@ -1,9 +1,10 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
-import matplotlib.subplots as plt_subplots
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import PolynomialFeatures
+from sklearn.metrics import mean_squared_error
 import os
 import io          
 import zipfile   
@@ -132,7 +133,6 @@ def extract_pdf_data_advanced(file):
                             
                     if first_num_idx > 0:
                         name = " ".join(parts[:first_num_idx]).strip()
-                        # Liste kirliliğini önlemek için metadata başlıklarını engelle
                         if name.startswith(("Program", "Revision", "Order", "Lot", "Text", "Kalibrasyon", "CMM", "Operator", "Date", ")", "INFORMATION", "Part")):
                             continue
                             
@@ -200,29 +200,23 @@ class AI_ToolLife:
         
         if len(x) < 2: return np.full(len(future_blocks), y[0] if len(y)>0 else 0)
             
-        # 1. ve 2. Faz: Veriye 2. derece polinom oturtarak pürüzsüz kavisi yakala
         z = np.polyfit(x, y, 2 if len(x) >= 3 else 1)
         p = np.poly1d(z)
         
         y_fut = p(future_blocks)
         
-        # Eğer parabol ters döndüyse (aşağı bakıyorsa) veya veri yetersizse lineer eğime zorla
         if len(z) == 3 and z[0] < 0:
             z_lin = np.polyfit(x, y, 1)
             p_lin = np.poly1d(z_lin)
             y_fut = p_lin(future_blocks)
             
-        # Fiziksel kurallar: Aşınma sıfırın altına inemez ve geriye gidemez
         y_fut = np.maximum(y_fut, 0)
         y_fut = np.maximum.accumulate(y_fut)
         
-        # 3. Faz: Parabolik Kırılma Bölgesi (Şahlanma)
         uyari_siniri = tolerance * 0.60
         for i in range(len(y_fut)):
             if y_fut[i] > uyari_siniri:
-                # Toleransa ne kadar yakın?
                 carpan = (y_fut[i] - uyari_siniri) / (tolerance - uyari_siniri)
-                # Üstel (kübik) olarak yukarı fırlat
                 faz3_siddeti = 0.5 * (carpan ** 3) * tolerance 
                 y_fut[i] += faz3_siddeti
                 
@@ -235,7 +229,6 @@ class AI_ToolLife:
         max_blok = max(blocks)
         veri_sayisi = len(blocks)
         
-        # X eksenini yoğunlaştır (Grafik kavisleri köşeli değil, pürüzsüz görünsün)
         future_blocks = np.linspace(0.1, max_blok * 10 + 50, 500)
         y_fut_array = self.uclu_faz_modeli(blocks, wear_data, future_blocks, tolerance)
         
@@ -263,7 +256,6 @@ class AI_ToolLife:
             sure_araligi_metni = f"{grafik_son_blok * (cam_cycle_time if cam_cycle_time else 0):.1f}+ Dk"
             uretim_metni = "Analiz ufku boyunca risk gözlemlenmemiştir."
             
-        # Eğrileri grafikte sadece kırılma noktasına kadar uzat
         limit_idx = np.where(future_blocks >= grafik_son_blok)[0]
         kesme_noktasi = limit_idx[0] if len(limit_idx) > 0 else len(future_blocks)
         
@@ -279,7 +271,7 @@ class AI_ToolLife:
     def plot_single_scenario(self, name):
         data = self.scenarios[name]
         tol = data['tolerance']
-        fig, (ax1, ax2) = plt_subplots.subplots(2, 1, figsize=(11, 10))
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 10))
         uyari_siniri = tol * 0.70
         
         for ax, x_raw, x_fut, xlabel in zip(
@@ -288,7 +280,6 @@ class AI_ToolLife:
             [data['b_fut'], [b * data['cam_cycle_time'] for b in data['b_fut']]],
             ["Ardışık İşlenen Parça Sırası (Adet)", "Toplam Aktif Kesme Süresi (Dakika)"]
         ):
-            # Arka Plan Şeritleri (Lejantları kaldırıldı, böylece kalabalık yapmayacak)
             ax.axhspan(0, uyari_siniri, facecolor='#d4edda', alpha=0.4)
             ax.axhspan(uyari_siniri, tol, facecolor='#fff3cd', alpha=0.5)
             ax.axhspan(tol, tol * 1.5, facecolor='#f8d7da', alpha=0.4)
@@ -305,11 +296,9 @@ class AI_ToolLife:
             ax.set_ylim(0.0, tol * 1.3)
             if len(x_fut) > 0: ax.set_xlim(0, x_fut[-1] * 1.05)
             
-            # Gösterge (Legend) grafiğin dışına alt kısma hizalandı, görünümü ferahlattı
             ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2, fontsize=10, framealpha=0.9)
             ax.grid(True, linestyle=':', alpha=0.6, zorder=0)
 
-        # Grafikler ile lejantlar arasına nefes payı bırak
         fig.tight_layout(pad=4.0)
         return fig 
 
