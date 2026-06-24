@@ -27,16 +27,31 @@ if 'ilk_giris' not in st.session_state: st.session_state.ilk_giris = True
 if 'analiz_yapildi' not in st.session_state: st.session_state.analiz_yapildi = False
 if 'sistem_verisi' not in st.session_state: st.session_state.sistem_verisi = None
 
+@st.dialog(" ✈️  LIFT-UP Sistemine Hoş Geldiniz")
+def rehber_dialog():
+    st.markdown("""
+    **Bu sistem, İstatistiksel Analizler kullanarak parça üzerindeki kritik bölgelerin aşınma ufuklarını tahmin eder.**
+
+    ###  🛠️  Nasıl Kullanılır?
+    1. **Veri Giriş Yöntemi:** Sol menüden CMM dosya yükleme (PDF/Otonom) yöntemini seçin.
+    2. **Eşleştirme:** Yüklediğiniz dosyadan analiz etmek istediğiniz kritik bölgeleri seçin ve CAM işleme süresini girin. (Otonom modda toleranslar dosyadan otomatik çekilir).
+    3. **Analiz:** 'Kestirim Analizini Başlat' butonuna basın ve modelin çizdiği 3-fazlı aşınma grafiklerini inceleyin.
+    """)
+
+if st.session_state.ilk_giris:
+    rehber_dialog()
+    st.session_state.ilk_giris = False
+
 # --- 2. CSS TEMA VE REMOVE BEFORE FLIGHT ŞERİDİ ---
 st.markdown("""
 <style>
 header[data-testid="stHeader"] { background: linear-gradient(90deg, #004B87, #E31837) !important; height: 4px !important; }
 h1, h2, h3, h4 { color: #004B87 !important; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-weight: 700; }
-[data-testid="metric-container"] { border: 1px solid rgba(136, 136, 136, 0.2); padding: 15px; border-radius: 8px; background-color: rgba(248, 249, 250, 0.05); box-shadow: 2px 2px 5px rgba(0,0,0,0.1); }
+[data-testid="metric-container"] { border: 1px solid rgba(136, 136, 136, 0.2); padding: 15px; border-radius: 8px; background-color: rgba(248, 249, 250, 0.05); box-shadow: 2px 2px 5px rgba(0,0,0,0.1); transition: transform 0.2s ease; }
 [data-testid="metric-container"]:hover { transform: translateY(-3px); box-shadow: 3px 3px 8px rgba(0,0,0,0.15); }
 [data-testid="stMetricValue"] { color: #004B87 !important; font-weight: 800; }
-div.stButton > button:first-child { background: linear-gradient(90deg, #004B87, #0066cc); color: #FFFFFF; border: none; border-radius: 6px; font-weight: bold; padding: 10px 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.2); }
-div.stButton > button:first-child:hover { background: linear-gradient(90deg, #E31837, #ff3333); transform: scale(1.02); }
+div.stButton > button:first-child { background: linear-gradient(90deg, #004B87, #0066cc); color: #FFFFFF; border: none; border-radius: 6px; font-weight: bold; padding: 10px 24px; transition: all 0.3s ease; box-shadow: 0 4px 6px rgba(0,0,0,0.2); }
+div.stButton > button:first-child:hover { background: linear-gradient(90deg, #E31837, #ff3333); color: #FFFFFF; transform: scale(1.02); box-shadow: 0 6px 10px rgba(0,0,0,0.25); }
 [data-testid="stSidebar"] { border-right: 3px solid #E31837; }
 [data-testid="stSidebar"]::before { content: "REMOVE BEFORE FLIGHT"; display: block; background-color: #E31837; color: white; font-family: monospace; font-weight: bold; text-align: center; padding: 6px; letter-spacing: 1.5px; margin-bottom: 20px; border-radius: 0 0 5px 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
 </style>
@@ -46,7 +61,7 @@ st.markdown("<div style='text-align: left; background-color: #E31837; color: whi
 
 col_baslik, col_logo = st.columns([5, 1])
 with col_baslik:
-    st.markdown("<h2 style='text-align: center; margin-bottom: 0;'> 🛠️ LIFT-UP: Kestirimci Bakım Dashboard</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; margin-bottom: 0;'> 🛠️  LIFT-UP: Kestirimci Bakım Dashboard</h2>", unsafe_allow_html=True)
     st.markdown("<hr style='height: 3px; background: linear-gradient(90deg, transparent, #004B87 30%, #E31837 70%, transparent); border: none; margin-top: 10px; margin-bottom: 5px;'>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888888; font-size: 15px; font-weight: bold; font-style: italic; letter-spacing: 1px;'>Precision in Engineering, Excellence in Aviation.</p>", unsafe_allow_html=True)
 
@@ -59,10 +74,9 @@ def filtrele_ve_takim_degisimini_bul(raw_blocks, raw_vals):
     if not raw_vals: return [], []
     guncel_vals = [raw_vals[0]]
     guncel_blocks = [raw_blocks[0]]
-    current_max = raw_vals[0]
     
+    current_max = raw_vals[0]
     for i in range(1, len(raw_vals)):
-        # 0.05 mm'den büyük ani düşüş "Takım Değişimidir"
         if raw_vals[i-1] - raw_vals[i] >= 0.05:
             guncel_vals = [raw_vals[i]]
             guncel_blocks = [raw_blocks[i]]
@@ -76,52 +90,97 @@ def filtrele_ve_takim_degisimini_bul(raw_blocks, raw_vals):
     return guncel_blocks, guncel_vals
 
 # --- 4. GELİŞMİŞ PDF MOTORU (Dinamik Tolerans Korumalı & Virgül/Nokta Ayrımı) ---
+def is_float_loose(s):
+    s_temiz = s.replace('°', '').strip()
+    return bool(re.match(r'^[-+]?[0-9]*[.,]?[0-9]+$', s_temiz))
+
 def extract_pdf_data_advanced(file):
     rows_list = []
-    son_okunan_ust_tolerans = 0.100 # Varsayılan güvenlik toleransı
-    son_okunan_alt_tolerans = -0.100
+    # Varsayılan başlangıç toleransları
+    son_ust_tol = 0.100
+    son_alt_tol = -0.100
     
     try:
         with pdfplumber.open(file) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if not text: continue
-                for line in text.split('\n'):
-                    line_clean = line.replace('"', '').strip()
-                    if re.search(r'\d', line_clean) and not line_clean.startswith(("Name", "CMM", "Date", "Run", "Part")):
-                        # Virgül veya noktayı standart noktaya çevirerek float dönüşümü
-                        nums_str = re.findall(r'[-+]?\d+[.,]\d+|[-+]?\d+', line_clean.replace('mm', ''))
+            in_table = False
+            for sayfa in pdf.pages:
+                metin = sayfa.extract_text(layout=True) # layout=True sütunları korur
+                if not metin: continue
+                
+                for satir in metin.split('\n'):
+                    satir = satir.strip()
+                    if not satir: continue
                         
-                        if len(nums_str) >= 2:
-                            ilk_sayi_index = line_clean.find(nums_str[0])
-                            olcum_adi = line_clean[:ilk_sayi_index].strip()
-                            if not olcum_adi: continue
+                    # Tablo başlığını tespit et
+                    if "Measured" in satir and "Nominal" in satir and "Name" in satir:
+                        in_table = True
+                        continue
+                        
+                    if not in_table: continue
+                        
+                    # Sayfa sonu/başlangıcı tespitleri
+                    if "Page " in satir and " of " in satir:
+                        in_table = False
+                        continue
+                        
+                    if "--- PAGE" in satir or "ZEISS" in satir or "TOMTAS" in satir or "HAVACILIK" in satir:
+                        continue
+                        
+                    parts = satir.split()
+                    first_num_idx = -1
+                    
+                    for i in range(1, len(parts)):
+                        if is_float_loose(parts[i]):
+                            first_num_idx = i
+                            break
                             
-                            try:
-                                nums = [float(n.replace(',', '.')) for n in nums_str]
-                                meas = nums[0]
-                                nom = nums[1] if len(nums) > 1 else 0.0
+                    # Satırda ölçüm verisi yakalandı
+                    if first_num_idx > 0:
+                        name = " ".join(parts[:first_num_idx]).strip()
+                        # Fazladan güvenlik: metadata satırlarını zorla engelle
+                        if name.startswith(("Program", "Revision", "Order", "Lot", "Text", "Kalibrasyon", "CMM", "Operator", "Date", ")")):
+                            continue
+                            
+                        remaining = parts[first_num_idx:]
+                        numbers = []
+                        
+                        for r in remaining:
+                            if is_float_loose(r):
+                                # Virgülü noktaya çevirerek float uyumlu hale getir
+                                numbers.append(r.replace('°', '').replace(',', '.'))
                                 
-                                # Eğer satırda 5 değer varsa (Toleranslar dosyada belirtilmişse)
-                                if len(nums) >= 5:
-                                    son_okunan_ust_tolerans = nums[2]
-                                    son_okunan_alt_tolerans = nums[3]
-                                    dev = nums[4]
-                                # Eğer tolerans verilmemişse (Örn: 1_PROFILE.X) üstteki değeri miras al
-                                elif len(nums) == 3:
-                                    dev = nums[2]
-                                else:
-                                    dev = nums[-1]
-                                    
-                                rows_list.append({
-                                    "Olcum_Adi": olcum_adi,
-                                    "Olculen_Deger": meas,
-                                    "Nominal": nom,
-                                    "Sapma": abs(dev),
-                                    "Ust_Tolerans": son_okunan_ust_tolerans, 
-                                    "Alt_Tolerans": son_okunan_alt_tolerans
-                                })
-                            except ValueError: continue
+                        # Değerleri çıkarma ve eksik toleransları miras alma (Inheritance)
+                        if len(numbers) >= 5:
+                            meas = float(numbers[0])
+                            nom = float(numbers[1])
+                            son_ust_tol = float(numbers[2]) # Yeni tolerans hafızaya alındı
+                            son_alt_tol = float(numbers[3])
+                            dev = float(numbers[4])
+                        elif len(numbers) == 3:
+                            meas = float(numbers[0])
+                            nom = float(numbers[1])
+                            dev = float(numbers[2])
+                            # Tolerans boş olduğu için bir önceki son_ust_tol değerini kullanacak
+                        elif len(numbers) == 1:
+                            meas = float(numbers[0])
+                            nom = 0.0
+                            dev = meas
+                        else:
+                            if numbers:
+                                meas = float(numbers[0])
+                                nom = float(numbers[1]) if len(numbers) > 1 else 0.0
+                                dev = float(numbers[-1])
+                            else:
+                                continue
+                                
+                        rows_list.append({
+                            "Olcum_Adi": name,
+                            "Olculen_Deger": meas,
+                            "Nominal": nom,
+                            "Sapma": abs(dev),
+                            "Ust_Tolerans": son_ust_tol,
+                            "Alt_Tolerans": son_alt_tol
+                        })
     except Exception as e:
         st.error(f"PDF Okuma Hatası: {e}")
     return pd.DataFrame(rows_list)
@@ -151,18 +210,17 @@ class AI_ToolLife:
             
         # 2. Faz: Çoğunluk Düz Gidiş (Lineer Eğim)
         eğim, kesisim = np.polyfit(x[-3:] if len(x) >= 3 else x, y[-3:] if len(x) >= 3 else y, 1)
-        if eğim <= 0: eğim = 0.001 # Minimum aşınma ivmesi
+        if eğim <= 0: eğim = 0.001 
         
         y_fut = []
         for bx in future_blocks:
             if bx <= x[-1]:
-                val = np.interp(bx, x, y) # Gerçek veri
+                val = np.interp(bx, x, y) 
             else:
                 lineer_tahmin = kesisim + eğim * bx
-                # 3. Faz: Parabolik Kırılma Bölgesi
+                # 3. Faz: Parabolik Kırılma Bölgesi (Toleransın %60'ından sonra)
                 uyari_siniri = tolerance * 0.60
                 if lineer_tahmin > uyari_siniri:
-                    # Toleransa yaklaştıkça x karesiyle artan parabolik büyüme
                     carpan = ((lineer_tahmin - uyari_siniri) / (tolerance - uyari_siniri))
                     faz3_siddeti = 0.15 * (carpan ** 2) * tolerance 
                     val = lineer_tahmin + faz3_siddeti
@@ -242,7 +300,6 @@ class AI_ToolLife:
             ax.set_ylim(0.0, tol * 1.3)
             if len(x_fut) > 0: ax.set_xlim(0, x_fut[-1] * 1.05)
             
-            # Efsaneyi (Legend) grafiğin sağına, dışına taşıdık
             ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9, framealpha=0.9, borderaxespad=0.)
             ax.grid(True, linestyle=':', alpha=0.6, zorder=0)
 
@@ -317,7 +374,6 @@ for i, sekme in enumerate(sekmeler):
                     aykiri_filtre = st.checkbox("Outlier Sapmaları Temizle", value=True, key=f"outlier_{i}")
                     cmm_str, bolge_toleransi = "", None
                     
-                    # Seçilen bölge için Otonom Tolerans
                     if secilen_olcum:
                         df_sub = df_ana[df_ana['Olcum_Adi'] == secilen_olcum]
                         if 'Ust_Tolerans' in df_sub.columns and pd.notna(df_sub['Ust_Tolerans'].iloc[0]):
@@ -386,7 +442,7 @@ if st.button(" 🚀  Kritik Bölge Kestirim Analizini Başlat", use_container_wi
                     raw_vals = df_sub['Sapma'].tolist()
                     raw_blocks = df_sub['Parca_Sira'].tolist() if 'Parca_Sira' in df_sub.columns else list(range(1, len(raw_vals) + 1))
                     
-                    # Takım Değişimi Algılaması (0.05 Eşiği)
+                    # Takım Değişimi Algılaması
                     blocks, cmm_vals = filtrele_ve_takim_degisimini_bul(raw_blocks, raw_vals)
 
                 system.add_scenario(d["isim"], blocks, cmm_vals, tolerance=aktif_tolerans, cam_cycle_time=d["cam_sure"])
