@@ -1,10 +1,9 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
+import matplotlib.subplots as plt_subplots
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.metrics import mean_squared_error
 import os
 import io          
 import zipfile   
@@ -96,7 +95,6 @@ def is_float_loose(s):
 
 def extract_pdf_data_advanced(file):
     rows_list = []
-    # Varsayılan başlangıç toleransları
     son_ust_tol = 0.100
     son_alt_tol = -0.100
     
@@ -104,21 +102,19 @@ def extract_pdf_data_advanced(file):
         with pdfplumber.open(file) as pdf:
             in_table = False
             for sayfa in pdf.pages:
-                metin = sayfa.extract_text(layout=True) # layout=True sütunları korur
+                metin = sayfa.extract_text(layout=True)
                 if not metin: continue
                 
                 for satir in metin.split('\n'):
                     satir = satir.strip()
                     if not satir: continue
                         
-                    # Tablo başlığını tespit et
                     if "Measured" in satir and "Nominal" in satir and "Name" in satir:
                         in_table = True
                         continue
                         
                     if not in_table: continue
                         
-                    # Sayfa sonu/başlangıcı tespitleri
                     if "Page " in satir and " of " in satir:
                         in_table = False
                         continue
@@ -134,11 +130,10 @@ def extract_pdf_data_advanced(file):
                             first_num_idx = i
                             break
                             
-                    # Satırda ölçüm verisi yakalandı
                     if first_num_idx > 0:
                         name = " ".join(parts[:first_num_idx]).strip()
-                        # Fazladan güvenlik: metadata satırlarını zorla engelle
-                        if name.startswith(("Program", "Revision", "Order", "Lot", "Text", "Kalibrasyon", "CMM", "Operator", "Date", ")")):
+                        # Liste kirliliğini önlemek için metadata başlıklarını engelle
+                        if name.startswith(("Program", "Revision", "Order", "Lot", "Text", "Kalibrasyon", "CMM", "Operator", "Date", ")", "INFORMATION", "Part")):
                             continue
                             
                         remaining = parts[first_num_idx:]
@@ -146,21 +141,18 @@ def extract_pdf_data_advanced(file):
                         
                         for r in remaining:
                             if is_float_loose(r):
-                                # Virgülü noktaya çevirerek float uyumlu hale getir
                                 numbers.append(r.replace('°', '').replace(',', '.'))
                                 
-                        # Değerleri çıkarma ve eksik toleransları miras alma (Inheritance)
                         if len(numbers) >= 5:
                             meas = float(numbers[0])
                             nom = float(numbers[1])
-                            son_ust_tol = float(numbers[2]) # Yeni tolerans hafızaya alındı
+                            son_ust_tol = float(numbers[2]) 
                             son_alt_tol = float(numbers[3])
                             dev = float(numbers[4])
                         elif len(numbers) == 3:
                             meas = float(numbers[0])
                             nom = float(numbers[1])
                             dev = float(numbers[2])
-                            # Tolerans boş olduğu için bir önceki son_ust_tol değerini kullanacak
                         elif len(numbers) == 1:
                             meas = float(numbers[0])
                             nom = 0.0
@@ -196,7 +188,7 @@ def clean_cmm_data(df):
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[^\d.,-]', '', regex=True).str.replace(',', '.'), errors='coerce').fillna(0)
     return df
 
-# --- 5. 3-FAZLI KESTİRİMCİ FİZİK MOTORU (Parabolik Şahlanma) ---
+# --- 5. 3-FAZLI PÜRÜZSÜZ S-EĞRİSİ MOTORU ---
 class AI_ToolLife:
     def __init__(self, birim_ad):
         self.birim_ad = birim_ad
@@ -208,27 +200,33 @@ class AI_ToolLife:
         
         if len(x) < 2: return np.full(len(future_blocks), y[0] if len(y)>0 else 0)
             
-        # 2. Faz: Çoğunluk Düz Gidiş (Lineer Eğim)
-        eğim, kesisim = np.polyfit(x[-3:] if len(x) >= 3 else x, y[-3:] if len(x) >= 3 else y, 1)
-        if eğim <= 0: eğim = 0.001 
+        # 1. ve 2. Faz: Veriye 2. derece polinom oturtarak pürüzsüz kavisi yakala
+        z = np.polyfit(x, y, 2 if len(x) >= 3 else 1)
+        p = np.poly1d(z)
         
-        y_fut = []
-        for bx in future_blocks:
-            if bx <= x[-1]:
-                val = np.interp(bx, x, y) 
-            else:
-                lineer_tahmin = kesisim + eğim * bx
-                # 3. Faz: Parabolik Kırılma Bölgesi (Toleransın %60'ından sonra)
-                uyari_siniri = tolerance * 0.60
-                if lineer_tahmin > uyari_siniri:
-                    carpan = ((lineer_tahmin - uyari_siniri) / (tolerance - uyari_siniri))
-                    faz3_siddeti = 0.15 * (carpan ** 2) * tolerance 
-                    val = lineer_tahmin + faz3_siddeti
-                else:
-                    val = lineer_tahmin
-            y_fut.append(val)
+        y_fut = p(future_blocks)
+        
+        # Eğer parabol ters döndüyse (aşağı bakıyorsa) veya veri yetersizse lineer eğime zorla
+        if len(z) == 3 and z[0] < 0:
+            z_lin = np.polyfit(x, y, 1)
+            p_lin = np.poly1d(z_lin)
+            y_fut = p_lin(future_blocks)
             
-        return np.array(y_fut)
+        # Fiziksel kurallar: Aşınma sıfırın altına inemez ve geriye gidemez
+        y_fut = np.maximum(y_fut, 0)
+        y_fut = np.maximum.accumulate(y_fut)
+        
+        # 3. Faz: Parabolik Kırılma Bölgesi (Şahlanma)
+        uyari_siniri = tolerance * 0.60
+        for i in range(len(y_fut)):
+            if y_fut[i] > uyari_siniri:
+                # Toleransa ne kadar yakın?
+                carpan = (y_fut[i] - uyari_siniri) / (tolerance - uyari_siniri)
+                # Üstel (kübik) olarak yukarı fırlat
+                faz3_siddeti = 0.5 * (carpan ** 3) * tolerance 
+                y_fut[i] += faz3_siddeti
+                
+        return y_fut
 
     def add_scenario(self, name, blocks, wear_data, tolerance, cam_cycle_time=None):
         if len(blocks) < 2:
@@ -237,7 +235,8 @@ class AI_ToolLife:
         max_blok = max(blocks)
         veri_sayisi = len(blocks)
         
-        future_blocks = np.arange(1, max_blok * 10 + 50)
+        # X eksenini yoğunlaştır (Grafik kavisleri köşeli değil, pürüzsüz görünsün)
+        future_blocks = np.linspace(0.1, max_blok * 10 + 50, 500)
         y_fut_array = self.uclu_faz_modeli(blocks, wear_data, future_blocks, tolerance)
         
         cross_idx = np.where(y_fut_array >= tolerance)[0]
@@ -264,8 +263,13 @@ class AI_ToolLife:
             sure_araligi_metni = f"{grafik_son_blok * (cam_cycle_time if cam_cycle_time else 0):.1f}+ Dk"
             uretim_metni = "Analiz ufku boyunca risk gözlemlenmemiştir."
             
+        # Eğrileri grafikte sadece kırılma noktasına kadar uzat
+        limit_idx = np.where(future_blocks >= grafik_son_blok)[0]
+        kesme_noktasi = limit_idx[0] if len(limit_idx) > 0 else len(future_blocks)
+        
         self.scenarios[name] = {
-            'b_raw': blocks, 'y_raw': wear_data, 'b_fut': future_blocks[:grafik_son_blok], 'y_fut': y_fut_array[:grafik_son_blok],
+            'b_raw': blocks, 'y_raw': wear_data, 
+            'b_fut': future_blocks[:kesme_noktasi], 'y_fut': y_fut_array[:kesme_noktasi],
             'tolerance': tolerance, 'guven_araligi_metni': guven_araligi_metni, 
             'sure_araligi_metni': sure_araligi_metni, 'uretim_metni': uretim_metni, 
             'cam_cycle_time': cam_cycle_time if cam_cycle_time else 0.0,
@@ -275,7 +279,7 @@ class AI_ToolLife:
     def plot_single_scenario(self, name):
         data = self.scenarios[name]
         tol = data['tolerance']
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(11, 10))
+        fig, (ax1, ax2) = plt_subplots.subplots(2, 1, figsize=(11, 10))
         uyari_siniri = tol * 0.70
         
         for ax, x_raw, x_fut, xlabel in zip(
@@ -284,12 +288,13 @@ class AI_ToolLife:
             [data['b_fut'], [b * data['cam_cycle_time'] for b in data['b_fut']]],
             ["Ardışık İşlenen Parça Sırası (Adet)", "Toplam Aktif Kesme Süresi (Dakika)"]
         ):
-            ax.axhspan(0, uyari_siniri, facecolor='#d4edda', alpha=0.4, label='Güvenli Bölge (Yeşil)')
-            ax.axhspan(uyari_siniri, tol, facecolor='#fff3cd', alpha=0.5, label='Uyarı Bölgesi (Sarı)')
-            ax.axhspan(tol, tol * 1.5, facecolor='#f8d7da', alpha=0.4, label='Risk Bölgesi (Kırmızı)')
+            # Arka Plan Şeritleri (Lejantları kaldırıldı, böylece kalabalık yapmayacak)
+            ax.axhspan(0, uyari_siniri, facecolor='#d4edda', alpha=0.4)
+            ax.axhspan(uyari_siniri, tol, facecolor='#fff3cd', alpha=0.5)
+            ax.axhspan(tol, tol * 1.5, facecolor='#f8d7da', alpha=0.4)
 
-            ax.axhline(tol, color='#dc3545', linewidth=3, linestyle='--', label=f"Dosya Toleransı ({tol} {self.birim_ad})")
-            ax.axhline(uyari_siniri, color='#ffc107', linewidth=2.5, linestyle='--', label=f"Erken Uyarı Eşiği")
+            ax.axhline(tol, color='#dc3545', linewidth=3, linestyle='--', label=f"Maks. Tolerans ({tol} {self.birim_ad})")
+            ax.axhline(uyari_siniri, color='#ffc107', linewidth=2.5, linestyle='--', label=f"Erken Uyarı Eşiği ({uyari_siniri:.3f} {self.birim_ad})")
 
             ax.plot(x_fut, data['y_fut'], color='#004B87', linestyle='-', linewidth=4, zorder=4, label="3-Fazlı Aşınma Eğrisi")
             ax.scatter(x_raw, data['y_raw'], color='#E31837', s=160, zorder=5, edgecolor='white', linewidth=2, label='CMM Ölçümleri')
@@ -300,10 +305,12 @@ class AI_ToolLife:
             ax.set_ylim(0.0, tol * 1.3)
             if len(x_fut) > 0: ax.set_xlim(0, x_fut[-1] * 1.05)
             
-            ax.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9, framealpha=0.9, borderaxespad=0.)
+            # Gösterge (Legend) grafiğin dışına alt kısma hizalandı, görünümü ferahlattı
+            ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2, fontsize=10, framealpha=0.9)
             ax.grid(True, linestyle=':', alpha=0.6, zorder=0)
 
-        fig.tight_layout(pad=3.0)
+        # Grafikler ile lejantlar arasına nefes payı bırak
+        fig.tight_layout(pad=4.0)
         return fig 
 
 # --- 6. YAN MENÜ (SİDEBAR) ---
@@ -402,9 +409,9 @@ for i, sekme in enumerate(sekmeler):
         with colC:
             st.markdown("**🧠 Arka Plan Matematiği**")
             if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)" and secilen_olcum:
-                st.success(f"✅ **{secilen_olcum}** bölgesi için {len(df_sub)} adet ardışık veri çekildi.")
+                st.success(f"✅ **{secilen_olcum}** bölgesi için veriler çekildi.")
                 if bolge_toleransi:
-                    st.info(f"📏 Bu bölgenin spesifik toleransı dosyadan **{bolge_toleransi} {birim_ad}** olarak ayarlandı.")
+                    st.info(f"📏 Bu bölgenin spesifik toleransı dosyadan **{bolge_toleransi} {birim_ad}** olarak miras alındı.")
                 else:
                     st.warning("⚠️ Dosyada Tolerans bulunamadı, manuel giriniz.")
                     bolge_toleransi = st.number_input(f"Manuel Tolerans ({birim_ad})", min_value=0.001, value=0.100, key=f"man_tol_{i}")
@@ -442,7 +449,6 @@ if st.button(" 🚀  Kritik Bölge Kestirim Analizini Başlat", use_container_wi
                     raw_vals = df_sub['Sapma'].tolist()
                     raw_blocks = df_sub['Parca_Sira'].tolist() if 'Parca_Sira' in df_sub.columns else list(range(1, len(raw_vals) + 1))
                     
-                    # Takım Değişimi Algılaması
                     blocks, cmm_vals = filtrele_ve_takim_degisimini_bul(raw_blocks, raw_vals)
 
                 system.add_scenario(d["isim"], blocks, cmm_vals, tolerance=aktif_tolerans, cam_cycle_time=d["cam_sure"])
