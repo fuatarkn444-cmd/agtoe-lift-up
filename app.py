@@ -2,9 +2,6 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.metrics import mean_squared_error
 import os
 import io          
 import zipfile   
@@ -30,13 +27,12 @@ if 'sistem_verisi' not in st.session_state: st.session_state.sistem_verisi = Non
 @st.dialog(" ✈️  LIFT-UP Sistemine Hoş Geldiniz")
 def rehber_dialog():
     st.markdown("""
-    **Bu sistem, İstatistiksel Regresyon analizleri kullanarak parça üzerindeki kritik bölgelerin aşınma ufuklarını tahmin eder.**
+    **Bu sistem, İstatistiksel Analizler kullanarak parça üzerindeki kritik bölgelerin aşınma ufuklarını tahmin eder.**
 
     ###  🛠️  Nasıl Kullanılır?
-    1. **Veri Giriş Yöntemi:** Sol menüden CMM dosya yükleme (PDF/Otonom) veya manuel giriş yöntemini seçin.
-    2. **Genel Ayarlar:** İzlemek istediğiniz maksimum tolerans sınırını girin.
-    3. **Eşleştirme:** Yüklediğiniz dosyadan analiz etmek istediğiniz kritik bölgeleri seçin ve CAM işleme süresini girin.
-    4. **Analiz:** 'Kestirim Analizini Başlat' butonuna basın ve modelin çizdiği aşınma grafiklerini inceleyin.
+    1. **Veri Giriş Yöntemi:** Sol menüden CMM dosya yükleme (PDF/Otonom) yöntemini seçin.
+    2. **Eşleştirme:** Yüklediğiniz dosyadan analiz etmek istediğiniz kritik bölgeleri seçin ve CAM işleme süresini girin. (Otonom modda toleranslar dosyadan otomatik çekilir).
+    3. **Analiz:** 'Kestirim Analizini Başlat' butonuna basın ve modelin çizdiği 3-fazlı aşınma grafiklerini inceleyin.
     """)
 
 if st.session_state.ilk_giris:
@@ -70,21 +66,27 @@ with col_logo:
     if os.path.exists("agtoe.png"): st.image("agtoe.png", width=150)
     elif os.path.exists("logo.jpg"): st.image("logo.jpg", width=150)
 
-# --- 3. OTONOM TAKIM DEĞİŞİMİ ALGILAYICI MOTOR ---
+# --- 3. AKILLI TAKIM DEĞİŞİMİ VE FİLTRASYON MOTORU ---
 def filtrele_ve_takim_degisimini_bul(raw_blocks, raw_vals):
-    """CMM verilerindeki ani düşüşleri analiz ederek takım sıfırlanmasını tespit eder."""
+    """0.05 mm'den büyük ani düşüşleri 'Takım Değişimi' olarak algılar ve seriyi sıfırlar."""
     if not raw_vals: return [], []
     guncel_vals = [raw_vals[0]]
     guncel_blocks = [raw_blocks[0]]
     
+    current_max = raw_vals[0]
     for i in range(1, len(raw_vals)):
-        # Eğer 0.02 mm'den fazla ani bir düşüş varsa (Takım sökülüp yenisi takılmış demektir)
-        if raw_vals[i-1] - raw_vals[i] > 0.02:
-            guncel_vals = [raw_vals[i]]       # Seriyi sıfırla ve yeni takımdan başla
+        # 0.05 mm'den büyük ani bir düşüş kesin takım değişimidir
+        if raw_vals[i-1] - raw_vals[i] >= 0.05:
+            guncel_vals = [raw_vals[i]]
             guncel_blocks = [raw_blocks[i]]
+            current_max = raw_vals[i]
         else:
-            guncel_vals.append(raw_vals[i])
+            # Ufak titreşim düşüşlerini yoksay ve kümülatif trendi koru
+            if raw_vals[i] > current_max:
+                current_max = raw_vals[i]
+            guncel_vals.append(current_max)
             guncel_blocks.append(raw_blocks[i])
+            
     return guncel_blocks, guncel_vals
 
 # --- 4. ZEISS CALYPSO PDF MOTORU ---
@@ -128,46 +130,77 @@ def clean_cmm_data(df):
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[^\d.,-]', '', regex=True).str.replace(',', '.'), errors='coerce').fillna(0)
     return df
 
-# --- 5. GELİŞMİŞ POLİNOMİYAL KESTİRİM MOTORU ---
+# --- 5. 3-FAZLI KESTİRİMCİ FİZİK MOTORU (Piecewise S-Curve) ---
 class AI_ToolLife:
-    def __init__(self, tolerance, birim_ad):
-        self.tolerance = float(tolerance)
+    def __init__(self, birim_ad):
         self.birim_ad = birim_ad
         self.scenarios = {}
 
-    def add_scenario(self, name, blocks, wear_data, cam_cycle_time=None):
+    def uclu_faz_modeli(self, blocks, wear_data, future_blocks, tolerance):
+        """
+        1. Faz: İlk Hızlı Artış (Ham verinin kendisi)
+        2. Faz: Çoğunluk Düz Gidiş (Lineer Eğim)
+        3. Faz: Hızlı Kırılma (Toleransın %70'inden sonra şahlanma denklemi)
+        """
+        x = np.array(blocks)
+        y = np.array(wear_data)
+        
+        if len(x) < 2:
+            return np.full(len(future_blocks), y[0] if len(y)>0 else 0)
+            
+        # 2. Faz Kararlı Eğimi Bul (Son noktalara odaklanarak)
+        if len(x) >= 3:
+            eğim, kesisim = np.polyfit(x[-3:], y[-3:], 1)
+        else:
+            eğim, kesisim = np.polyfit(x, y, 1)
+            
+        if eğim <= 0: eğim = 0.0005 # Aşınma her zaman artmalıdır
+        
+        y_fut = []
+        for bx in future_blocks:
+            if bx <= x[-1]:
+                # Geçmiş verilerde 1. Fazın (Hızlı Başlangıç) kendisini koru
+                val = np.interp(bx, x, y)
+            else:
+                lineer_tahmin = kesisim + eğim * bx
+                # 2. Faz (Kopukluğu önleyen düzeltilmiş lineer trend)
+                fark = y[-1] - (kesisim + eğim * x[-1])
+                lineer_tahmin += fark
+                
+                # 3. Faz: Toleransa %70 yaklaşıldığında hızlı parabolik şahlanma
+                uyari_siniri = tolerance * 0.70
+                if lineer_tahmin > uyari_siniri:
+                    faz3_siddeti = ((lineer_tahmin - uyari_siniri) ** 2) / (tolerance * 0.5)
+                    val = lineer_tahmin + faz3_siddeti
+                else:
+                    val = lineer_tahmin
+            y_fut.append(val)
+            
+        return np.array(y_fut)
+
+    def add_scenario(self, name, blocks, wear_data, tolerance, cam_cycle_time=None, t_theo=None, mat_name=None):
         if len(blocks) < 2:
             raise ValueError(f"{name} analizi için en az 2 ardışık parça ölçümü gerekiyor.")
             
-        X = np.array(blocks).reshape(-1, 1)
-        y = np.array(wear_data)
         max_blok = max(blocks)
         veri_sayisi = len(blocks)
         
-        # Takımın karakteristik doğasına (S-Eğrisi) uygun 3. derece regresyon modeli
-        deg = 3 if len(blocks) >= 4 else 2
-        poly = PolynomialFeatures(degree=deg)
-        X_poly = poly.fit_transform(X)
-        model = LinearRegression().fit(X_poly, y)
-        mse = mean_squared_error(y, model.predict(X_poly))
-        rmse_val = np.sqrt(mse)
+        # Gelecekteki blokları oluştur ve 3-Fazlı modeli uygula
+        grafik_son_blok = max_blok * 10 + 50
+        future_blocks = np.arange(1, grafik_son_blok + 1)
+        y_fut_array = self.uclu_faz_modeli(blocks, wear_data, future_blocks, tolerance)
         
-        # Kök Bulma İşlemi (Polinomun toleransı kestiği nokta)
-        coeffs = np.polyfit(X.flatten(), y, deg)
-        coeffs_tol = coeffs.copy()
-        coeffs_tol[-1] -= self.tolerance
-        roots = np.roots(coeffs_tol)
-        
-        valid_roots = [r.real for r in roots if np.isreal(r) and r.real > X[-1][0]]
+        # Toleransın kesildiği noktayı bul
+        cross_idx = np.where(y_fut_array >= tolerance)[0]
         uzak_tahmin_uyarisi = False
         
-        if valid_roots:
-            exact_cross = min(valid_roots)
-            grafik_son_blok = min(int(np.ceil(exact_cross)) + 2, 5000)
+        if len(cross_idx) > 0:
+            exact_cross = float(future_blocks[cross_idx[0]])
+            grafik_son_blok = min(int(exact_cross) + 3, 5000)
             if exact_cross > (max_blok * 5): uzak_tahmin_uyarisi = True
             
             guven_araligi_metni = f"{exact_cross:.1f} Adet Parça"
-            uretim_metni = f"Kestirim modeline göre aktif kesici takımınız {exact_cross:.1f}. parçadan sonra maksimum tolerans sınırını aşacaktır."
+            uretim_metni = f"3-Fazlı modele göre aktif kesici takımınız {exact_cross:.1f}. parçadan sonra maksimum tolerans sınırını aşacaktır."
             
             if cam_cycle_time and cam_cycle_time > 0:
                 exact_time_minutes = exact_cross * cam_cycle_time
@@ -182,22 +215,25 @@ class AI_ToolLife:
             sure_araligi_metni = f"{grafik_son_blok * (cam_cycle_time if cam_cycle_time else 0):.1f}+ Dk"
             uretim_metni = "Analiz ufku boyunca bu bölgede herhangi bir boyutsal risk gözlemlenmemiştir."
             
-        future_blocks = np.arange(0, grafik_son_blok + 1).reshape(-1, 1)
-        future_y = model.predict(poly.transform(future_blocks))
+        # Grafiğin aşırı uzamasını engellemek için dizileri kırp
+        future_blocks = future_blocks[:grafik_son_blok]
+        y_fut_array = y_fut_array[:grafik_son_blok]
         
         self.scenarios[name] = {
-            'b_raw': blocks, 'y_raw': wear_data, 'b_fut': future_blocks.flatten(), 'y_fut': future_y,
-            'rmse_val': rmse_val, 'guven_araligi_metni': guven_araligi_metni, 
+            'b_raw': blocks, 'y_raw': wear_data, 'b_fut': future_blocks, 'y_fut': y_fut_array,
+            'tolerance': tolerance, 'guven_araligi_metni': guven_araligi_metni, 
             'sure_araligi_metni': sure_araligi_metni, 'uretim_metni': uretim_metni, 
             'cam_cycle_time': cam_cycle_time if cam_cycle_time else 0.0,
-            'veri_sayisi': veri_sayisi, 'uzak_tahmin_uyarisi': uzak_tahmin_uyarisi
+            'veri_sayisi': veri_sayisi, 'uzak_tahmin_uyarisi': uzak_tahmin_uyarisi,
+            't_theo': t_theo if t_theo else 0.0, 'mat_name': mat_name if mat_name else "Otonom İşleme"
         }
 
-    # ÇİFT GRAFİK MOTORU (Parça Sayısı + Süre)
+    # ÇİFT GRAFİK MOTORU (Parça Sayısı + Dakika Ekseni)
     def plot_single_scenario(self, name):
         data = self.scenarios[name]
+        tol = data['tolerance']
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
-        uyari_siniri = self.tolerance * 0.75
+        uyari_siniri = tol * 0.70
         
         for ax, x_raw, x_fut, xlabel in zip(
             [ax1, ax2], 
@@ -207,21 +243,20 @@ class AI_ToolLife:
         ):
             # Endüstriyel Renk Şeritleri
             ax.axhspan(0, uyari_siniri, facecolor='#d4edda', alpha=0.6, label='Güvenli İşleme Alanı (Yeşil)')
-            ax.axhspan(uyari_siniri, self.tolerance, facecolor='#fff3cd', alpha=0.7, label='Erken Uyarı Alanı (Sarı)')
-            ax.axhspan(self.tolerance, self.tolerance * 1.5, facecolor='#f8d7da', alpha=0.6, label='Boyutsal Risk Alanı (Kırmızı)')
+            ax.axhspan(uyari_siniri, tol, facecolor='#fff3cd', alpha=0.7, label='Erken Uyarı Alanı (Sarı)')
+            ax.axhspan(tol, tol * 1.5, facecolor='#f8d7da', alpha=0.6, label='Boyutsal Risk Alanı (Kırmızı)')
 
-            # Sınır Eşikleri
-            ax.axhline(self.tolerance, color='#dc3545', linewidth=3, linestyle='--', label=f"Maksimum Tolerans ({self.tolerance} {self.birim_ad})")
-            ax.axhline(uyari_siniri, color='#ffc107', linewidth=2.5, linestyle='--', label=f"Erken Uyarı Sınırı ({uyari_siniri} {self.birim_ad})")
+            ax.axhline(tol, color='#dc3545', linewidth=3, linestyle='--', label=f"Dosya Toleransı ({tol} {self.birim_ad})")
+            ax.axhline(uyari_siniri, color='#ffc107', linewidth=2.5, linestyle='--', label=f"Erken Uyarı Sınırı ({uyari_siniri:.3f} {self.birim_ad})")
 
-            # Gerçekleşen Noktalar ve Gelişmiş Regresyon Eğrisi
-            ax.plot(x_fut, data['y_fut'], color='#004B87', linestyle='-', linewidth=3.5, zorder=4, label="Kestirim Trend Eğrisi")
-            ax.scatter(x_raw, data['y_raw'], color='#E31837', s=140, zorder=5, edgecolor='white', linewidth=1.5, label='Güncel CMM Ölçümleri')
+            # 3-Fazlı Regresyon Eğrisi ve CMM Noktaları
+            ax.plot(x_fut, data['y_fut'], color='#004B87', linestyle='-', linewidth=3.5, zorder=4, label="3-Fazlı Aşınma Tahmin Eğrisi")
+            ax.scatter(x_raw, data['y_raw'], color='#E31837', s=140, zorder=5, edgecolor='white', linewidth=1.5, label='Kümülatif CMM Sapma Noktaları')
             
             ax.set_title(f"Kritik Bölge Dashboard: {name.upper()}", fontsize=12, fontweight='bold', pad=15)
             ax.set_xlabel(xlabel, fontsize=10, fontweight='bold')
             ax.set_ylabel(f"Boyutsal Sapma [{self.birim_ad}]", fontsize=10, fontweight='bold')
-            ax.set_ylim(0.0, self.tolerance * 1.4)
+            ax.set_ylim(0.0, tol * 1.4)
             if len(x_fut) > 0: ax.set_xlim(0, x_fut[-1])
             
             ax.legend(loc='upper left', fontsize=9, framealpha=0.9)
@@ -237,20 +272,24 @@ with st.sidebar:
     
     st.markdown("---")
     st.header(" 📏  Genel Ayarlar")
-    birim_secimi = st.radio("Ölçüm Birimi Sistemi", ["Mikron (µm)", "Milimetre (mm)"], horizontal=True)
+    birim_secimi = st.radio("Ölçüm Birimi Sistemi", ["Milimetre (mm)", "Mikron (µm)"], index=0, horizontal=True) # Varsayılan mm yapıldı
     is_mikron = "Mikron" in birim_secimi
     birim_ad = "Mikron" if is_mikron else "mm"
     
-    tol_ornek = "Örn: 5" if is_mikron else "Örn: 0.05"
-    cmm_ornek = "Örn: 0.2 0.5 0.8 1.2" if is_mikron else "Örn: 0.0002 0.0005 0.0008 0.0012"
-
-    tol_siniri = st.number_input(f"Maksimum Tolerans Limiti ({birim_ad})", value=None, format="%g", placeholder=tol_ornek)
     senaryo_sayisi = st.number_input("İzlenecek Kritik Bölge Sayısı", min_value=1, max_value=5, value=1, step=1)
+    
+    if veri_giris_modu == "Manuel Veri Girişi (Klasik)":
+        tol_ornek = "Örn: 5" if is_mikron else "Örn: 0.1"
+        tol_siniri = st.number_input(f"Maksimum Tolerans Limiti ({birim_ad})", min_value=0.001, value=0.100, format="%g")
+        st.markdown("---")
+        st.markdown("📜 **Klasik Mod Ayarları**")
+        ortak_malzeme = st.checkbox("Tüm operasyonlarda ortak malzeme kullan", value=True)
+        genel_m_secim = st.selectbox("Ortak Hammadde", list(MALZEMELER.keys())) if ortak_malzeme else None
 
 # --- 7. OTONOM DOSYA YÜKLEME ALGORİTMASI ---
 df_ana = pd.DataFrame()
 if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)":
-    st.info("💡 **Otonom Mod:** CMM cihazından sırayla aldığınız ardışık PDF raporlarını (K1 S001, K1 S002 vb.) doğrudan buraya yükleyin.")
+    st.info("💡 **Otonom Mod:** PDF veya Excel formatındaki CMM raporlarını sırayla sürükleyiniz. Toleranslar doğrudan raporlardan çekilecektir.")
     yuklenen_dosyalar = st.file_uploader("CMM Raporlarını Klasör Halinde Sürükleyin", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
     
     if yuklenen_dosyalar:
@@ -295,22 +334,43 @@ for i, sekme in enumerate(sekmeler):
                 st.markdown("**CMM Rapor Eşleştirmesi**")
                 if not df_ana.empty and 'Olcum_Adi' in df_ana.columns:
                     olcumler = df_ana['Olcum_Adi'].unique()
-                    secilen_olcum = st.selectbox("📏 CMM Dosyasındaki Karşılığı", olcumler, key=f"geo_{i}", index=None, placeholder="Bölge Seçin...")
-                    if not secilen_olcum: eksik_alanlar.append(f"{isim}: Geometri Seçimi")
-                    aykiri_filtre = st.checkbox("Hatalı Ölçümleri (Outlier) Temizle", value=True, key=f"outlier_{i}")
-                    cmm_str = ""
+                    secilen_olcum = st.selectbox("📏 Dosyadaki Karşılığı", olcumler, key=f"geo_{i}", index=None, placeholder="Bölge Seçin...")
+                    if not secilen_olcum: eksik_alanlar.append(f"{isim}: Bölge Seçimi")
+                    aykiri_filtre = st.checkbox("Hatalı (Outlier) Sapmaları Temizle", value=True, key=f"outlier_{i}")
+                    cmm_str, t_theo, m_secim, bolge_toleransi = "", None, None, None
+                    
+                    # Seçilen bölge için dosyadan Tolerans değerini çekme
+                    if secilen_olcum:
+                        df_sub = df_ana[df_ana['Olcum_Adi'] == secilen_olcum]
+                        if 'Ust_Tolerans' in df_sub.columns and pd.notna(df_sub['Ust_Tolerans'].iloc[0]):
+                            bolge_toleransi = df_sub['Ust_Tolerans'].iloc[0]
                 else:
-                    st.info("Geçerli bir CMM dosyası/PDF bekleniyor.")
+                    st.info("Eşleştirme listesi için geçerli bir CMM dosyası/PDF bekleniyor.")
                     eksik_alanlar.append(f"{isim}: CMM Dosyası")
-                    secilen_olcum, aykiri_filtre, cmm_str = None, False, ""
+                    secilen_olcum, aykiri_filtre, cmm_str, bolge_toleransi = None, False, "", None
             else:
                 st.markdown("**Manuel Ölçüm Girişi**")
-                cmm_str = st.text_input(f"Bölge Aşınma Değerleri ({birim_ad}, Boşluklu)", key=f"cmm_{i}", placeholder=cmm_ornek)
-                if not cmm_str: eksik_alanlar.append(f"{isim}: CMM Verileri")
-                secilen_olcum, aykiri_filtre = None, False
+                cmm_str = st.text_input(f"Bölge Aşınma Değerleri ({birim_ad}, Boşluklu)", key=f"cmm_{i}", placeholder="Örn: 0.01 0.04 0.08")
+                
+                st.markdown("**Taylor Parametreleri (Opsiyonel)**")
+                m_secim = genel_m_secim if ortak_malzeme else st.selectbox("Malzeme", list(MALZEMELER.keys()), key=f"mat_{i}")
+                col_m1, col_m2 = st.columns(2)
+                with col_m1:
+                    vc = st.number_input("Vc (m/min)", min_value=1, value=400, key=f"vc_{i}")
+                    ae = st.number_input("ae (mm)", min_value=0.1, value=5.0, key=f"ae_{i}")
+                with col_m2:
+                    t_cap = st.number_input("Takım Çapı (D)", min_value=1, value=6, key=f"d_{i}")
+                
+                if m_secim and t_cap and vc and ae:
+                    daf = 1.8 if ae >= t_cap else 1.4
+                    t_theo = (MALZEMELER[m_secim]['c_taylor'] / (vc**3.5)) * (1 / (daf**1.5))
+                else: t_theo = None
+                
+                if not cmm_str: eksik_alanlar.append(f"{isim}: Manuel CMM Serisi")
+                secilen_olcum, aykiri_filtre, bolge_toleransi = None, False, tol_siniri
 
         with colB:
-            st.markdown("**CAM Kesme ve Çevrim Verileri**")
+            st.markdown("**CAM İşleme Çevrim Verisi**")
             t_col1, t_col2 = st.columns(2)
             with t_col1:
                 cam_dk = st.number_input("Çevrim Dakikası", min_value=0, key=f"cam_dk_{i}", value=None, placeholder="Örn: 2")
@@ -323,34 +383,38 @@ for i, sekme in enumerate(sekmeler):
         with colC:
             st.markdown("** 🧠 Arka Plan Matematiği**")
             if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)" and secilen_olcum:
-                df_sub = df_ana[df_ana['Olcum_Adi'] == secilen_olcum]
-                if not df_sub.empty and 'Sapma' in df_sub.columns:
-                    st.success(f"✅ **{secilen_olcum}** bölgesi için {len(df_sub)} adet ardışık veri çekildi.")
+                st.success(f"✅ **{secilen_olcum}** bölgesi için {len(df_sub)} adet ardışık veri çekildi.")
+                if bolge_toleransi:
+                    st.info(f"📏 Bu bölgenin spesifik toleransı dosyadan **{bolge_toleransi} {birim_ad}** olarak ayarlandı.")
+                else:
+                    st.warning("⚠️ Dosyada Tolerans bulunamadı, lütfen manuel giriniz.")
+                    bolge_toleransi = st.number_input(f"Manuel Tolerans ({birim_ad})", min_value=0.001, value=0.100, key=f"man_tol_{i}")
             
             st.markdown("""
             <div style='background-color:rgba(248, 249, 250, 0.05); padding:10px; border-radius:5px; font-size:12px; border-left: 3px solid #004B87; box-shadow: 1px 1px 3px rgba(0,0,0,0.1);'>
-            Sistem, CMM verilerindeki ani düşüşleri algılayarak <b>takım değişimlerini otonom tespit eder.</b> Sadece aktif takımın aşınma verisi 3. derece regresyon ile modellenerek (başlangıç, kararlı aşınma, kırılma fazları) takımın toleransı aşacağı parça ve zaman öngörülür.
+            Sistem, CMM verilerindeki ani düşüşleri algılayarak <b>takım değişimlerini otonom tespit eder.</b> Sadece aktif takımın aşınma verisi özel geliştirilmiş <b>3-Fazlı Model (Hızlı başlangıç, Kararlı ilerleme ve Hızlı Kırılma)</b> ile değerlendirilerek aşınma ufku grafiklere dökülür.
             </div>
             """, unsafe_allow_html=True)
 
         senaryo_verileri.append({
             "isim": isim, "cmm_str": cmm_str, "secilen_olcum": secilen_olcum, 
-            "aykiri_filtre": aykiri_filtre, "cam_sure": cam_sure
+            "aykiri_filtre": aykiri_filtre, "cam_sure": cam_sure, "bolge_toleransi": bolge_toleransi,
+            "t_theo": t_theo if veri_giris_modu != "CMM Dosyası Yükle (PDF/Otonom)" else None
         })
 
 st.markdown("---")
 
 if st.button(" 🚀  Kritik Bölge Kestirim Analizini Başlat", use_container_width=True, type="primary"):
-    if tol_siniri is None: eksik_alanlar.append("Genel Ayarlar: Tolerans Limiti")
-    
     if len(eksik_alanlar) > 0:
         hata_metni = "\n".join([f"- {alan}" for alan in list(set(eksik_alanlar))])
         st.error(f" ⚠️  Lütfen analizi başlatmadan önce aşağıdaki eksik bilgileri doldurunuz:\n\n{hata_metni}")
         st.session_state.analiz_yapildi = False
     else:
         try:
-            system = AI_ToolLife(tolerance=tol_siniri, birim_ad=birim_ad)
+            system = AI_ToolLife(birim_ad=birim_ad)
             for d in senaryo_verileri:
+                aktif_tolerans = d["bolge_toleransi"]
+                
                 if veri_giris_modu == "Manuel Veri Girişi (Klasik)":
                     raw_vals = [float(x.replace(',', '.')) for x in d["cmm_str"].split()]
                     blocks, cmm_vals = filtrele_ve_takim_degisimini_bul(list(range(1, len(raw_vals) + 1)), raw_vals)
@@ -368,10 +432,10 @@ if st.button(" 🚀  Kritik Bölge Kestirim Analizini Başlat", use_container_wi
                     raw_vals = df_sub['Sapma'].tolist()
                     raw_blocks = df_sub['Parca_Sira'].tolist() if 'Parca_Sira' in df_sub.columns else list(range(1, len(raw_vals) + 1))
                     
-                    # TAKIM DEĞİŞİMİ ALGORİTMASI BURADA ÇALIŞIYOR
+                    # 0.05 Eşiği İle Takım Değişimi Algılaması
                     blocks, cmm_vals = filtrele_ve_takim_degisimini_bul(raw_blocks, raw_vals)
 
-                system.add_scenario(d["isim"], blocks, cmm_vals, d["cam_sure"])
+                system.add_scenario(d["isim"], blocks, cmm_vals, tolerance=aktif_tolerans, cam_cycle_time=d["cam_sure"], t_theo=d["t_theo"])
             
             st.session_state.sistem_verisi = system
             st.session_state.analiz_yapildi = True
@@ -400,7 +464,7 @@ if st.session_state.analiz_yapildi and st.session_state.sistem_verisi is not Non
 
             st.info(f" 🎯  **Kestirim Raporu Metni:** {veri['uretim_metni']}")
             
-            if veri['veri_sayisi'] < 3: st.error(" ⚠️  **Düşük Veri Yoğunluğu:** Kararlı tahmin için en az 3 ardışık parça verisi yüklenmelidir.")
+            if veri['veri_sayisi'] < 3: st.error(" ⚠️  **Düşük Veri Yoğunluğu:** Kararlı tahmin için takım değişimi sonrası en az 3 ardışık parça verisi birikmelidir.")
             if veri['uzak_tahmin_uyarisi']: st.warning(" 🔭  **Aşırı Uzak Tahmin:** Uzun vadeli eğri kestirimleri sapma toleransını artırabilir.")
 
     st.markdown("---")
@@ -422,10 +486,9 @@ if st.session_state.analiz_yapildi and st.session_state.sistem_verisi is not Non
         rapor_verileri.append({
             "Kritik Bölge / Unsur Adı": isim, 
             "Çevrim Süresi (Parça Başı)": temiz_cam_sure_metni if veri['cam_cycle_time'] > 0 else "Manuel Mod",
-            "CMM Kümülatif Aşınma Serisi": " - ".join([f"{x:.4f}" for x in veri['y_raw']]), 
+            "CMM Aktif Takım Aşınma Serisi": " - ".join([f"{x:.4f}" for x in veri['y_raw']]), 
             "Kestirim Kırılma Ufku (Parça)": veri['guven_araligi_metni'], 
             "Kestirim Kırılma Ufku (Zaman)": veri['sure_araligi_metni'],
-            "Model Regresyon Sapması (RMSE)": round(veri['rmse_val'], 4), 
             "Tahmini Aşınma Özeti": veri['uretim_metni']
         })
     
