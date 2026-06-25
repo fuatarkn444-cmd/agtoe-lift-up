@@ -2,9 +2,7 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.metrics import mean_squared_error
+from scipy.interpolate import PchipInterpolator, interp1d
 import os
 import io          
 import zipfile   
@@ -33,25 +31,24 @@ def rehber_dialog():
     **Bu sistem, İstatistiksel Analizler kullanarak parça üzerindeki kritik bölgelerin aşınma ufuklarını tahmin eder.**
 
     ###  🛠️  Nasıl Kullanılır?
-    1. **Veri Giriş Yöntemi:** Sol menüden CMM dosya yükleme (PDF/Otonom) yöntemini seçin.
-    2. **Eşleştirme:** Yüklediğiniz dosyadan analiz etmek istediğiniz kritik bölgeleri seçin ve CAM işleme süresini girin. (Otonom modda toleranslar dosyadan otomatik çekilir).
-    3. **Analiz:** 'Kestirim Analizini Başlat' butonuna basın ve modelin çizdiği 3-fazlı aşınma grafiklerini inceleyin.
+    1. **Veri Giriş:** Sol menüden CMM dosya yükleme (PDF/Otonom) yöntemini seçin ve dosyaları yükleyin.
+    2. **Çoklu Eşleştirme:** Operatör isim değiştirmiş olabileceği için, izlenecek bölgeye ait **tüm isim varyasyonlarını** açılır listeden (multiselect) seçin. (Örn: `1_PROFILE` ve `1_0.1 BILGI...`).
+    3. **Analiz:** 'Kestirim Analizini Başlat' butonuna basın ve 3-fazlı (S-Curve) grafiklerini inceleyin.
     """)
 
 if st.session_state.ilk_giris:
     rehber_dialog()
     st.session_state.ilk_giris = False
 
-# --- 2. CSS TEMA VE REMOVE BEFORE FLIGHT ŞERİDİ ---
+# --- 2. CSS TEMA ---
 st.markdown("""
 <style>
 header[data-testid="stHeader"] { background: linear-gradient(90deg, #004B87, #E31837) !important; height: 4px !important; }
 h1, h2, h3, h4 { color: #004B87 !important; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; font-weight: 700; }
-[data-testid="metric-container"] { border: 1px solid rgba(136, 136, 136, 0.2); padding: 15px; border-radius: 8px; background-color: rgba(248, 249, 250, 0.05); box-shadow: 2px 2px 5px rgba(0,0,0,0.1); transition: transform 0.2s ease; }
-[data-testid="metric-container"]:hover { transform: translateY(-3px); box-shadow: 3px 3px 8px rgba(0,0,0,0.15); }
+[data-testid="metric-container"] { border: 1px solid rgba(136, 136, 136, 0.2); padding: 15px; border-radius: 8px; background-color: rgba(248, 249, 250, 0.05); box-shadow: 2px 2px 5px rgba(0,0,0,0.1); }
 [data-testid="stMetricValue"] { color: #004B87 !important; font-weight: 800; }
-div.stButton > button:first-child { background: linear-gradient(90deg, #004B87, #0066cc); color: #FFFFFF; border: none; border-radius: 6px; font-weight: bold; padding: 10px 24px; transition: all 0.3s ease; box-shadow: 0 4px 6px rgba(0,0,0,0.2); }
-div.stButton > button:first-child:hover { background: linear-gradient(90deg, #E31837, #ff3333); color: #FFFFFF; transform: scale(1.02); box-shadow: 0 6px 10px rgba(0,0,0,0.25); }
+div.stButton > button:first-child { background: linear-gradient(90deg, #004B87, #0066cc); color: #FFFFFF; font-weight: bold; border-radius: 6px; box-shadow: 0 4px 6px rgba(0,0,0,0.2); }
+div.stButton > button:first-child:hover { background: linear-gradient(90deg, #E31837, #ff3333); transform: scale(1.02); }
 [data-testid="stSidebar"] { border-right: 3px solid #E31837; }
 [data-testid="stSidebar"]::before { content: "REMOVE BEFORE FLIGHT"; display: block; background-color: #E31837; color: white; font-family: monospace; font-weight: bold; text-align: center; padding: 6px; letter-spacing: 1.5px; margin-bottom: 20px; border-radius: 0 0 5px 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
 </style>
@@ -63,11 +60,6 @@ col_baslik, col_logo = st.columns([5, 1])
 with col_baslik:
     st.markdown("<h2 style='text-align: center; margin-bottom: 0;'> 🛠️  LIFT-UP: Kestirimci Bakım Dashboard</h2>", unsafe_allow_html=True)
     st.markdown("<hr style='height: 3px; background: linear-gradient(90deg, transparent, #004B87 30%, #E31837 70%, transparent); border: none; margin-top: 10px; margin-bottom: 5px;'>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888888; font-size: 15px; font-weight: bold; font-style: italic; letter-spacing: 1px;'>Precision in Engineering, Excellence in Aviation.</p>", unsafe_allow_html=True)
-
-with col_logo:
-    if os.path.exists("agtoe.png"): st.image("agtoe.png", width=150)
-    elif os.path.exists("logo.jpg"): st.image("logo.jpg", width=150)
 
 # --- 3. AKILLI TAKIM DEĞİŞİMİ VE FİLTRASYON MOTORU ---
 def filtrele_ve_takim_degisimini_bul(raw_blocks, raw_vals):
@@ -77,6 +69,7 @@ def filtrele_ve_takim_degisimini_bul(raw_blocks, raw_vals):
     
     current_max = raw_vals[0]
     for i in range(1, len(raw_vals)):
+        # 0.05 mm'den büyük ani düşüş "Takım Değişimidir"
         if raw_vals[i-1] - raw_vals[i] >= 0.05:
             guncel_vals = [raw_vals[i]]
             guncel_blocks = [raw_blocks[i]]
@@ -89,13 +82,14 @@ def filtrele_ve_takim_degisimini_bul(raw_blocks, raw_vals):
             
     return guncel_blocks, guncel_vals
 
-# --- 4. GELİŞMİŞ PDF MOTORU (Dinamik Tolerans Korumalı & Virgül/Nokta Ayrımı) ---
+# --- 4. GELİŞMİŞ PDF MOTORU (Tolerans Miras Alma Özelliği Aktif) ---
 def is_float_loose(s):
     s_temiz = s.replace('°', '').strip()
     return bool(re.match(r'^[-+]?[0-9]*[.,]?[0-9]+$', s_temiz))
 
 def extract_pdf_data_advanced(file):
     rows_list = []
+    # Varsayılan başlangıç toleransları
     son_ust_tol = 0.100
     son_alt_tol = -0.100
     
@@ -113,13 +107,10 @@ def extract_pdf_data_advanced(file):
                     if "Measured" in satir and "Nominal" in satir and "Name" in satir:
                         in_table = True
                         continue
-                        
                     if not in_table: continue
-                        
                     if "Page " in satir and " of " in satir:
                         in_table = False
                         continue
-                        
                     if "--- PAGE" in satir or "ZEISS" in satir or "TOMTAS" in satir or "HAVACILIK" in satir:
                         continue
                         
@@ -133,6 +124,7 @@ def extract_pdf_data_advanced(file):
                             
                     if first_num_idx > 0:
                         name = " ".join(parts[:first_num_idx]).strip()
+                        # Metadata ve sayfa altı bilgilerini engelle
                         if name.startswith(("Program", "Revision", "Order", "Lot", "Text", "Kalibrasyon", "CMM", "Operator", "Date", ")", "INFORMATION", "Part")):
                             continue
                             
@@ -146,13 +138,14 @@ def extract_pdf_data_advanced(file):
                         if len(numbers) >= 5:
                             meas = float(numbers[0])
                             nom = float(numbers[1])
-                            son_ust_tol = float(numbers[2]) 
+                            son_ust_tol = float(numbers[2]) # TOLERANS HAFIZAYA ALINIYOR (Miras Alma)
                             son_alt_tol = float(numbers[3])
                             dev = float(numbers[4])
                         elif len(numbers) == 3:
                             meas = float(numbers[0])
                             nom = float(numbers[1])
                             dev = float(numbers[2])
+                            # Tolerans boş! Bir üstteki tolerans miras alınıyor (son_ust_tol korunuyor)
                         elif len(numbers) == 1:
                             meas = float(numbers[0])
                             nom = 0.0
@@ -162,8 +155,7 @@ def extract_pdf_data_advanced(file):
                                 meas = float(numbers[0])
                                 nom = float(numbers[1]) if len(numbers) > 1 else 0.0
                                 dev = float(numbers[-1])
-                            else:
-                                continue
+                            else: continue
                                 
                         rows_list.append({
                             "Olcum_Adi": name,
@@ -183,43 +175,63 @@ def clean_cmm_data(df):
         'Nominal value': 'Nominal', '+Tol': 'Ust_Tolerans', '-Tol': 'Alt_Tolerans', 'Deviation': 'Sapma'
     }
     df.rename(columns=sutun_haritasi, inplace=True)
-    for col in ['Olculen_Deger', 'Nominal', 'Ust_Tolerans', 'Alt_Tolerans', 'Sapma']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[^\d.,-]', '', regex=True).str.replace(',', '.'), errors='coerce').fillna(0)
     return df
 
-# --- 5. 3-FAZLI PÜRÜZSÜZ S-EĞRİSİ MOTORU ---
+# --- 5. 3-FAZLI PÜRÜZSÜZ S-EĞRİSİ MOTORU (Noktaları Yakalama) ---
 class AI_ToolLife:
     def __init__(self, birim_ad):
         self.birim_ad = birim_ad
         self.scenarios = {}
 
     def uclu_faz_modeli(self, blocks, wear_data, future_blocks, tolerance):
-        x = np.array(blocks)
-        y = np.array(wear_data)
+        x = np.array(blocks, dtype=float)
+        y = np.array(wear_data, dtype=float)
+        y_fut = np.zeros(len(future_blocks))
         
         if len(x) < 2: return np.full(len(future_blocks), y[0] if len(y)>0 else 0)
+
+        # Benzersiz X değerlerini al (Interpolation hatalarını önlemek için)
+        _, u_idx = np.unique(x, return_index=True)
+        x_u = x[u_idx]
+        y_u = y[u_idx]
+
+        # Noktaların İÇİNDEN GEÇEN akıllı eğri (Pchip Interpolator)
+        try:
+            if len(x_u) >= 3:
+                interp_func = PchipInterpolator(x_u, y_u)
+            else:
+                interp_func = interp1d(x_u, y_u, kind='linear', fill_value='extrapolate')
+        except:
+            interp_func = interp1d(x, y, kind='linear', fill_value='extrapolate')
+
+        # Kararlı Fazın (Faz 2) İlerleme İvmesi
+        try:
+            egim, _ = np.polyfit(x[-3:] if len(x) >= 3 else x, y[-3:] if len(x) >= 3 else y, 1)
+        except:
+            egim = 0.001 
+        if egim <= 0: egim = 0.001 
+
+        uyari_siniri = tolerance * 0.70
+
+        for i, bx in enumerate(future_blocks):
+            if bx <= x[-1]:
+                # FAZ 1 & 2: Gerçek CMM noktalarının rotasını kopyala
+                val = interp_func(bx) if bx >= x[0] else y[0]
+            else:
+                # FAZ 2 (Gelecek): Lineer Eğim
+                val = y[-1] + egim * (bx - x[-1])
+                
+                # FAZ 3 (Kırılma): Toleransın %70'inden sonra Parabolik Şahlanma (S-Curve)
+                if val > uyari_siniri:
+                    carpan = (val - uyari_siniri) / (tolerance - uyari_siniri)
+                    faz3_siddeti = 0.5 * (carpan ** 3) * tolerance 
+                    val += faz3_siddeti
+            y_fut[i] = val
             
-        z = np.polyfit(x, y, 2 if len(x) >= 3 else 1)
-        p = np.poly1d(z)
-        
-        y_fut = p(future_blocks)
-        
-        if len(z) == 3 and z[0] < 0:
-            z_lin = np.polyfit(x, y, 1)
-            p_lin = np.poly1d(z_lin)
-            y_fut = p_lin(future_blocks)
-            
+        # Fizik kuralları: Aşınma eksiye düşemez ve kümülatiftir
         y_fut = np.maximum(y_fut, 0)
         y_fut = np.maximum.accumulate(y_fut)
         
-        uyari_siniri = tolerance * 0.60
-        for i in range(len(y_fut)):
-            if y_fut[i] > uyari_siniri:
-                carpan = (y_fut[i] - uyari_siniri) / (tolerance - uyari_siniri)
-                faz3_siddeti = 0.5 * (carpan ** 3) * tolerance 
-                y_fut[i] += faz3_siddeti
-                
         return y_fut
 
     def add_scenario(self, name, blocks, wear_data, tolerance, cam_cycle_time=None):
@@ -229,7 +241,8 @@ class AI_ToolLife:
         max_blok = max(blocks)
         veri_sayisi = len(blocks)
         
-        future_blocks = np.linspace(0.1, max_blok * 10 + 50, 500)
+        # Grafiğin daha "Kıvrımlı/Pürüzsüz" görünmesi için noktaları yoğunlaştır
+        future_blocks = np.linspace(min(blocks), max_blok * 10 + 50, 400)
         y_fut_array = self.uclu_faz_modeli(blocks, wear_data, future_blocks, tolerance)
         
         cross_idx = np.where(y_fut_array >= tolerance)[0]
@@ -280,11 +293,12 @@ class AI_ToolLife:
             [data['b_fut'], [b * data['cam_cycle_time'] for b in data['b_fut']]],
             ["Ardışık İşlenen Parça Sırası (Adet)", "Toplam Aktif Kesme Süresi (Dakika)"]
         ):
+            # Arka Plan Şeritleri
             ax.axhspan(0, uyari_siniri, facecolor='#d4edda', alpha=0.4)
             ax.axhspan(uyari_siniri, tol, facecolor='#fff3cd', alpha=0.5)
             ax.axhspan(tol, tol * 1.5, facecolor='#f8d7da', alpha=0.4)
 
-            ax.axhline(tol, color='#dc3545', linewidth=3, linestyle='--', label=f"Maks. Tolerans ({tol} {self.birim_ad})")
+            ax.axhline(tol, color='#dc3545', linewidth=3, linestyle='--', label=f"Maksimum Tolerans ({tol} {self.birim_ad})")
             ax.axhline(uyari_siniri, color='#ffc107', linewidth=2.5, linestyle='--', label=f"Erken Uyarı Eşiği ({uyari_siniri:.3f} {self.birim_ad})")
 
             ax.plot(x_fut, data['y_fut'], color='#004B87', linestyle='-', linewidth=4, zorder=4, label="3-Fazlı Aşınma Eğrisi")
@@ -296,7 +310,8 @@ class AI_ToolLife:
             ax.set_ylim(0.0, tol * 1.3)
             if len(x_fut) > 0: ax.set_xlim(0, x_fut[-1] * 1.05)
             
-            ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2, fontsize=10, framealpha=0.9)
+            # Göstergeyi (Legend) alt kısma, grafiğin dışına taşıdık ki çizgileri kapatmasın
+            ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15), ncol=2, fontsize=10, frameon=True, framealpha=0.9)
             ax.grid(True, linestyle=':', alpha=0.6, zorder=0)
 
         fig.tight_layout(pad=4.0)
@@ -322,7 +337,7 @@ with st.sidebar:
 # --- 7. OTONOM DOSYA YÜKLEME ALGORİTMASI ---
 df_ana = pd.DataFrame()
 if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)":
-    st.info("💡 **Otonom Mod:** PDF veya Excel formatındaki raporları sırayla sürükleyiniz. Tolerans değerleri doğrudan CMM dosyasından otomatik alınacaktır.")
+    st.info("💡 **Otonom Mod:** PDF raporlarını sırayla sürükleyiniz. Tolerans değerleri dosyadan otomatik çekilir.")
     yuklenen_dosyalar = st.file_uploader("CMM Raporlarını Klasör Halinde Sürükleyin", type=['pdf', 'csv', 'xlsx'], accept_multiple_files=True)
     
     if yuklenen_dosyalar:
@@ -332,12 +347,8 @@ if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)":
             try:
                 if dosya.name.lower().endswith('.pdf'):
                     df_temp = extract_pdf_data_advanced(dosya)
-                elif dosya.name.lower().endswith('.csv'):
-                    df_temp = pd.read_csv(dosya, sep=None, engine='python', decimal='.')
-                    df_temp = clean_cmm_data(df_temp)
                 else:
-                    df_temp = pd.read_excel(dosya)
-                    df_temp = clean_cmm_data(df_temp)
+                    df_temp = clean_cmm_data(pd.read_excel(dosya))
                 
                 if not df_temp.empty:
                     df_temp['Parca_Sira'] = parca_sayaci
@@ -349,7 +360,7 @@ if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)":
         if veri_listesi:
             df_ana = pd.concat(veri_listesi, ignore_index=True)
 
-# --- 8. PARAMETRE GİRİŞİ VE EŞLEŞTİRME ---
+# --- 8. PARAMETRE GİRİŞİ VE ÇOKLU EŞLEŞTİRME ---
 st.markdown(f"###  📋  Kritik İzleme Bölgelerinin Yapılandırılması ({senaryo_sayisi} Bölge)")
 sekmeler = st.tabs([f"{i+1}. Kritik Bölge" for i in range(senaryo_sayisi)])
 senaryo_verileri = []
@@ -365,24 +376,27 @@ for i, sekme in enumerate(sekmeler):
                 st.markdown("**CMM Rapor Eşleştirmesi**")
                 if not df_ana.empty and 'Olcum_Adi' in df_ana.columns:
                     olcumler = df_ana['Olcum_Adi'].unique()
-                    secilen_olcum = st.selectbox("📏 Dosyadaki Karşılığı", olcumler, key=f"geo_{i}", index=None)
-                    if not secilen_olcum: eksik_alanlar.append(f"{isim}: Bölge Seçimi")
+                    
+                    # ÇOKLU SEÇİM KUTUSU (MULTİSELECT): İsim değişimlerine karşı koruma
+                    secilen_olcumler = st.multiselect("📏 Dosyadaki Karşılığı (Birden fazla seçilebilir)", olcumler, key=f"geo_{i}", placeholder="Bölge Seçin...")
+                    
+                    if not secilen_olcumler: eksik_alanlar.append(f"{isim}: Bölge Seçimi")
                     aykiri_filtre = st.checkbox("Outlier Sapmaları Temizle", value=True, key=f"outlier_{i}")
                     cmm_str, bolge_toleransi = "", None
                     
-                    if secilen_olcum:
-                        df_sub = df_ana[df_ana['Olcum_Adi'] == secilen_olcum]
+                    if secilen_olcumler:
+                        df_sub = df_ana[df_ana['Olcum_Adi'].isin(secilen_olcumler)]
                         if 'Ust_Tolerans' in df_sub.columns and pd.notna(df_sub['Ust_Tolerans'].iloc[0]):
                             bolge_toleransi = df_sub['Ust_Tolerans'].iloc[0]
                 else:
                     st.info("Eşleştirme listesi için geçerli PDF bekleniyor.")
                     eksik_alanlar.append(f"{isim}: CMM Dosyası")
-                    secilen_olcum, aykiri_filtre, cmm_str, bolge_toleransi = None, False, "", None
+                    secilen_olcumler, aykiri_filtre, cmm_str, bolge_toleransi = [], False, "", None
             else:
                 st.markdown("**Manuel Ölçüm Girişi**")
                 cmm_str = st.text_input(f"Aşınma Değerleri ({birim_ad})", key=f"cmm_{i}")
                 if not cmm_str: eksik_alanlar.append(f"{isim}: Manuel CMM Serisi")
-                secilen_olcum, aykiri_filtre, bolge_toleransi = None, False, tol_siniri
+                secilen_olcumler, aykiri_filtre, bolge_toleransi = [], False, tol_siniri
 
         with colB:
             st.markdown("**CAM İşleme Çevrim Verisi**")
@@ -397,16 +411,16 @@ for i, sekme in enumerate(sekmeler):
 
         with colC:
             st.markdown("**🧠 Arka Plan Matematiği**")
-            if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)" and secilen_olcum:
-                st.success(f"✅ **{secilen_olcum}** bölgesi için veriler çekildi.")
+            if veri_giris_modu == "CMM Dosyası Yükle (PDF/Otonom)" and secilen_olcumler:
+                st.success(f"✅ Seçilen bölge(ler) için {len(df_sub)} adet ardışık veri çekildi.")
                 if bolge_toleransi:
-                    st.info(f"📏 Bu bölgenin spesifik toleransı dosyadan **{bolge_toleransi} {birim_ad}** olarak miras alındı.")
+                    st.info(f"📏 Bu bölgenin spesifik toleransı dosyadan **{bolge_toleransi} {birim_ad}** olarak ayarlandı.")
                 else:
                     st.warning("⚠️ Dosyada Tolerans bulunamadı, manuel giriniz.")
                     bolge_toleransi = st.number_input(f"Manuel Tolerans ({birim_ad})", min_value=0.001, value=0.100, key=f"man_tol_{i}")
 
         senaryo_verileri.append({
-            "isim": isim, "cmm_str": cmm_str, "secilen_olcum": secilen_olcum, 
+            "isim": isim, "cmm_str": cmm_str, "secilen_olcumler": secilen_olcumler, 
             "aykiri_filtre": aykiri_filtre, "cam_sure": cam_sure, "bolge_toleransi": bolge_toleransi
         })
 
@@ -427,7 +441,7 @@ if st.button(" 🚀  Kritik Bölge Kestirim Analizini Başlat", use_container_wi
                     raw_vals = [float(x.replace(',', '.')) for x in d["cmm_str"].split()]
                     blocks, cmm_vals = filtrele_ve_takim_degisimini_bul(list(range(1, len(raw_vals) + 1)), raw_vals)
                 else:
-                    df_sub = df_ana[df_ana['Olcum_Adi'] == d["secilen_olcum"]].copy()
+                    df_sub = df_ana[df_ana['Olcum_Adi'].isin(d["secilen_olcumler"])].copy()
                     
                     if d["aykiri_filtre"]:
                         mean_val = df_sub['Sapma'].mean()
